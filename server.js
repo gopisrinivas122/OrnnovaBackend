@@ -301,6 +301,51 @@ app.get('/userDetailstoAssignRequirement/:reqId/:userId', async (req, res) => {
     }
 });
 
+// app.get('/userDetailstoAssignRequirement/:reqId/:userId', async (req, res) => {
+//     const { reqId, userId } = req.params;
+   
+//     try {
+//         // Find the user with the provided userId to get their team members
+//         const user = await NewUser.findById(userId);
+        
+//         if (!user) {
+//             return res.status(404).json({ message: "User not found" });
+//         }
+
+//         // Get the user's Team array (assuming it's an array of user IDs)
+//         const teamIds = user.Team; // This is an array of user IDs
+
+//         // If the user has no team, return an empty array for team members
+//         if (!teamIds || teamIds.length === 0) {
+//             return res.json({ teamMembers: [], requirementDetails: null });
+//         }
+
+//         // Find the team members who do not have the specified reqId in their Requirements array
+//         const teamMembers = await NewUser.find({
+//             _id: { $in: teamIds }, // Filter users whose IDs are in the Team array
+//             UserType: { $in: ["User"] }, // Ensure UserType is "User"
+//             Requirements: { $ne: reqId }  // Exclude users who already have this reqId in their Requirements array
+//         });
+
+//         // Find the requirement details using the reqId from the NewRequirement schema
+//         const requirementDetails = await NewRequirment.findById(reqId);
+        
+//         if (!requirementDetails) {
+//             return res.status(404).json({ message: "Requirement not found" });
+//         }
+
+//         // Get the count of users assigned to the specific reqId
+//         const usersAssignedCount = await NewUser.countDocuments({
+//             Requirements: reqId // Count users who already have this requirement assigned
+//         });
+
+//         // Return both team members and the requirement details along with the count
+//         res.json({ teamMembers, requirementDetails, usersAssignedCount });
+//     } catch (error) {
+//         res.status(500).json({ message: "Server Error", error });
+//     }
+// });
+
 app.get('/userDetailsofAssignedRequirement/:reqId/:userId', async (req, res) => {
     const reqId = req.params.reqId;
     const userId = req.params.userId;
@@ -1125,7 +1170,7 @@ app.put('/claim/:id', async (req, res) => {
       );
   
       if (result) {
-        res.json({ status: "Success", msg: "Requirement claimed successfully." });
+        res.json({ status: "Success", msg: "Requirement claimed successfully ✅" });
       } else {
         res.status(500).json({ status: "Fail", msg: "Failed to update requirement." });
       }
@@ -1833,6 +1878,63 @@ app.post('/assignReq/:userId/:requirementId', async (req, res) => {
 });
 
 // Unassign Requirement from User
+// app.post('/unassignReq/:userId/:requirementId', async (req, res) => {
+//     const { userId, requirementId } = req.params;
+
+//     // Ensure requirementId is in the correct format
+//     if (!mongoose.Types.ObjectId.isValid(requirementId)) {
+//         return res.status(400).json({ status: 'error', msg: 'Invalid Requirement ID format.' });
+//     }
+
+//     if (!requirementId) {
+//         return res.status(400).json({ status: 'error', msg: 'Requirement ID is required.' });
+//     }
+
+//     try {
+//         // Validate userId format
+//         if (!mongoose.Types.ObjectId.isValid(userId)) {
+//             return res.status(400).json({ status: 'error', msg: 'Invalid User ID format.' });
+//         }
+
+//         // Find the user by userId
+//         const user = await NewUser.findById(userId);
+
+//         if (!user) {
+//             return res.status(404).json({ status: 'error', msg: 'User not found.' });
+//         }
+
+//         // Check if the user is actually assigned to this requirement
+//         const requirementAssigned = user.Requirements.includes(requirementId);
+//         if (!requirementAssigned) {
+//             return res.status(400).json({
+//                 status: 'error',
+//                 msg: 'This user is not assigned to this requirement.',
+//             });
+//         }
+
+//         // Check if the user has uploaded any candidates for the specific requirement
+//         const requirement = await CandidateModel.findOne({
+//             reqId: requirementId,
+//             recruiterId: userId  // Check if this user uploaded candidates for the requirement
+//         });
+
+//         if (requirement && requirement.candidates.length > 0) {
+//             return res.status(400).json({
+//                 status: 'error',
+//                 msg: "Cannot unassign this requirement as candidates are uploaded by this user ",
+//             });
+//         }
+
+//         // Remove the requirementId from the Requirements array of the user
+//         user.Requirements = user.Requirements.filter(reqId => reqId.toString() !== requirementId);
+//         await user.save();  // Save the updated user document
+
+//         res.json({ status: 'success', msg: 'Requirement unassigned successfully ✅' });
+//     } catch (error) {
+//         console.error('Error unassigning requirement:', error);
+//         res.status(500).json({ status: 'error', msg: 'An error occurred while unassigning the requirement.' });
+//     }
+// });
 app.post('/unassignReq/:userId/:requirementId', async (req, res) => {
     const { userId, requirementId } = req.params;
 
@@ -1853,29 +1955,155 @@ app.post('/unassignReq/:userId/:requirementId', async (req, res) => {
 
         // Find the user by userId
         const user = await NewUser.findById(userId);
-
         if (!user) {
             return res.status(404).json({ status: 'error', msg: 'User not found.' });
         }
 
-        // Check if requirementId is in the Requirements array
-        if (user.Requirements.includes(requirementId)) {
-            // Remove the requirementId from the Requirements array
-            user.Requirements = user.Requirements.filter(reqId => reqId.toString() !== requirementId);
-            await user.save();  // Save the updated user document
-
-            res.json({ status: 'success', msg: 'Requirement unassigned successfully ✅' });
-        } else {
-            res.json({ status: 'error', msg: 'Requirement not found for this user 😊' });
+        // Check if the user is assigned to this requirement
+        const requirementAssigned = user.Requirements.includes(requirementId);
+        if (!requirementAssigned) {
+            return res.status(400).json({
+                status: 'error',
+                msg: 'This user is not assigned to this requirement.',
+            });
         }
+
+        // Check if the user has uploaded any candidates for the specific requirement
+        const requirement = await CandidateModel.findOne({
+            reqId: requirementId,
+            recruiterId: userId
+        });
+
+        if (requirement && requirement.candidates.length > 0) {
+            return res.status(400).json({
+                status: 'error',
+                msg: "Cannot unassign this requirement as candidates are uploaded by this user.",
+            });
+        }
+
+        // Remove the requirementId from the user's Requirements array
+        user.Requirements = user.Requirements.filter(reqId => reqId.toString() !== requirementId);
+        await user.save();
+
+        // Update NewRequirement schema to remove userId from claimedBy field
+        await NewRequirment.updateOne(
+            { _id: requirementId },
+            { $pull: { claimedBy: { userId } } }  // Pulls userId from claimedBy array
+        );
+
+        res.json({ status: 'success', msg: 'Requirement unassigned successfully ✅' });
     } catch (error) {
         console.error('Error unassigning requirement:', error);
         res.status(500).json({ status: 'error', msg: 'An error occurred while unassigning the requirement.' });
     }
 });
 
-
 // Get Total Count of the candidates
+// app.get('/getTeamRequirementsCount/:userId', async (req, res) => {
+//     const { userId } = req.params;
+
+//     try {
+//         // Step 1: Find the user by userId
+//         const user = await NewUser.findById(userId);
+
+//         if (!user) {
+//             return res.status(404).json({ status: "Error", msg: "User not found" });
+//         }
+
+//         // Step 2: Get the team members' IDs, including the user ID for comparison
+//         const teamMemberIds = [userId, ...user.Team];
+
+//         if (teamMemberIds.length === 0) {
+//             return res.status(404).json({ status: "Error", msg: "No team members associated with this user" });
+//         }
+
+//         // Step 3: Fetch all requirements from MainSchema that match any team member's recruiterId
+//         const teamRequirements = await CandidateModel.find({
+//             recruiterId: { $in: teamMemberIds }
+//         });
+
+//         if (teamRequirements.length === 0) {
+//             return res.status(404).json({ status: "Error", msg: "No requirements found for user or team members" });
+//         }
+
+//         // Step 4: Initialize counters and arrays to store data
+//         let totalCandidatesCount = 0;
+//         let todaysCandidatesCount = 0;
+//         let totalCandidatesData = [];
+//         let todaysCandidatesData = [];
+//         let recruiterStats = []; // Array to hold stats for each recruiter
+
+//         const today = new Date();
+//         today.setHours(0, 0, 0, 0); // Set time to midnight for today's comparison
+
+//         // Step 5: Iterate through each team member (recruiter)
+//         for (const recruiterId of teamMemberIds) {
+//             let recruiterTotalCandidates = 0;
+//             let recruiterTodaysCandidates = 0;
+//             let recruiterCandidatesData = [];
+//             let recruiterTodaysData = [];
+
+//             // Fetch recruiter details from NewUser schema
+//             const recruiterDetails = await NewUser.findById(recruiterId);
+
+//             if (!recruiterDetails) {
+//                 continue; // Skip if recruiter is not found
+//             }
+
+//             // Filter requirements for the current recruiter
+//             const recruiterRequirements = teamRequirements.filter(req => req.recruiterId.includes(recruiterId));
+
+//             // Process each requirement for the recruiter
+//             recruiterRequirements.forEach(req => {
+//                 req.candidates.forEach(candidate => {
+//                     // Only include candidates with savedStatus as "Uploaded"
+//                     if (candidate.savedStatus === "Uploaded") {
+//                         recruiterTotalCandidates++; // Increment recruiter's total candidates count
+//                         totalCandidatesCount++; // Increment total for all recruiters
+//                         recruiterCandidatesData.push(candidate); // Collect recruiter's candidate data
+//                         totalCandidatesData.push(candidate); // Collect all candidate data
+
+//                         // Check if candidate was uploaded today
+//                         const uploadedOn = new Date(candidate.uploadedOn);
+//                         if (uploadedOn >= today) {
+//                             recruiterTodaysCandidates++; // Increment recruiter's today's candidates count
+//                             todaysCandidatesCount++; // Increment today's total count
+//                             recruiterTodaysData.push(candidate); // Collect recruiter's today's data
+//                             todaysCandidatesData.push(candidate); // Collect today's total data
+//                         }
+//                     }
+//                 });
+//             });
+
+//             // Add this recruiter's stats to the recruiterStats array
+//             recruiterStats.push({
+//                 recruiterId: recruiterDetails._id,
+//                 recruiterCode: recruiterDetails.EmpCode,
+//                 recruiterName: recruiterDetails.EmployeeName, // Add recruiter name
+//                 recruiterEmail: recruiterDetails.Email,       // Add recruiter email
+//                 totalCandidates: recruiterTotalCandidates,
+//                 todaysCandidates: recruiterTodaysCandidates,
+//                 totalCandidatesData: recruiterCandidatesData,  // Candidate data for this recruiter
+//                 todaysCandidatesData: recruiterTodaysData      // Today's candidate data for this recruiter
+//             });
+//         }
+
+//         // Step 6: Send the response with total, today's counts, candidate data, and recruiter stats
+//         res.json({
+//             status: "Success",
+//             totalCandidates: totalCandidatesCount,
+//             todaysCandidates: todaysCandidatesCount,
+//             totalCandidatesData,       // Array of all candidates
+//             todaysCandidatesData,      // Array of today's candidates
+//             recruiterStats             // Array with stats for each recruiter, including their details
+//         });
+
+//     } catch (err) {
+//         console.error(err);
+//         res.status(500).json({ status: "Error", msg: err.message });
+//     }
+// });
+
 app.get('/getTeamRequirementsCount/:userId', async (req, res) => {
     const { userId } = req.params;
 
@@ -1887,23 +2115,25 @@ app.get('/getTeamRequirementsCount/:userId', async (req, res) => {
             return res.status(404).json({ status: "Error", msg: "User not found" });
         }
 
-        // Step 2: Get the team members' IDs associated with the user
-        const teamMemberIds = user.Team;
+        // Step 2: Get the team members' IDs, including the user ID for comparison
+        const teamMemberIds = [userId, ...user.Team];
 
-        if (!teamMemberIds || teamMemberIds.length === 0) {
+        if (teamMemberIds.length === 0) {
             return res.status(404).json({ status: "Error", msg: "No team members associated with this user" });
         }
 
         // Step 3: Fetch all requirements from MainSchema that match any team member's recruiterId
         const teamRequirements = await CandidateModel.find({
-            recruiterId: { $in: teamMemberIds }
+            recruiterId: { $in: teamMemberIds },
+            reqId : { $in: user.Requirements } // Ensure the requirement is also in the user's Requirements array
         });
+       
 
         if (teamRequirements.length === 0) {
-            return res.status(404).json({ status: "Error", msg: "No requirements found for team members" });
+            return res.status(404).json({ status: "Error", msg: "No requirements found for user or team members" });
         }
 
-        // Step 4: Initialize total candidates count, today's candidates count, and arrays to hold data
+        // Step 4: Initialize counters and arrays to store data
         let totalCandidatesCount = 0;
         let todaysCandidatesCount = 0;
         let totalCandidatesData = [];
@@ -1924,11 +2154,11 @@ app.get('/getTeamRequirementsCount/:userId', async (req, res) => {
             const recruiterDetails = await NewUser.findById(recruiterId);
 
             if (!recruiterDetails) {
-                continue; // If recruiter not found, skip this recruiter
+                continue; // Skip if recruiter is not found
             }
 
             // Filter requirements for the current recruiter
-            const recruiterRequirements = teamRequirements.filter(req => req.recruiterId.includes(recruiterId));
+            const recruiterRequirements = teamRequirements.filter(req => req.recruiterId.toString() === recruiterId.toString());
 
             // Process each requirement for the recruiter
             recruiterRequirements.forEach(req => {
@@ -1982,56 +2212,125 @@ app.get('/getTeamRequirementsCount/:userId', async (req, res) => {
 });
 
 
-app.get('/getRequirementsCandidatesCount/:recruiterId', async (req, res) => {
-    const { recruiterId } = req.params;
+// app.get('/getRequirementsCandidatesCount/:recruiterId/:userId', async (req, res) => {
+//     const { recruiterId } = req.params;
+
+//     try {
+//         // Step 1: Fetch all requirements related to the recruiter
+//         const recruiterRequirements = await CandidateModel.find({
+//             recruiterId: recruiterId
+//         });
+
+//         if (recruiterRequirements.length === 0) {
+//             return res.status(404).json({ status: "Error", msg: "No requirements found for this recruiter" });
+//         }
+
+//         // Step 2: Collect reqIds from the recruiterRequirements
+//         const reqIds = recruiterRequirements.map(req => req.reqId);
+
+//         // Step 3: Fetch requirement details using reqIds
+//         const requirements = await NewRequirment.find({
+//             _id: { $in: reqIds } // Convert string ids to ObjectId
+//         });
+
+//         // Step 4: Create a map to store candidate counts for each reqId
+//         const reqIdToCandidateCount = {};
+
+//         // Populate the candidate counts, only counting candidates with savedStatus as "Uploaded"
+//         recruiterRequirements.forEach(req => {
+//             const uploadedCandidatesCount = req.candidates.filter(candidate => candidate.savedStatus === "Uploaded").length;
+//             if (reqIdToCandidateCount[req.reqId]) {
+//                 reqIdToCandidateCount[req.reqId] += uploadedCandidatesCount;
+//             } else {
+//                 reqIdToCandidateCount[req.reqId] = uploadedCandidatesCount;
+//             }
+//         });
+
+//         // Step 5: Attach candidate counts to the requirement details
+//         const requirementsWithCounts = requirements.map(req => ({
+//             ...req.toObject(),
+//             candidateCount: reqIdToCandidateCount[req._id.toString()] || 0
+//         }));
+
+//         // Step 6: Send the response with the requirements and candidate counts
+//         res.json({
+//             status: "Success",
+//             requirements: requirementsWithCounts
+//         });
+//     } catch (err) {
+//         console.error(err);
+//         res.status(500).json({ status: "Error", msg: err.message });
+//     }
+// }); 
+
+app.get('/getRequirementsCandidatesCount/:recruiterId/:userId', async (req, res) => {
+    const { recruiterId, userId } = req.params;
 
     try {
-        // Step 1: Fetch all requirements related to the recruiter
-        const recruiterRequirements = await CandidateModel.find({
-            recruiterId: recruiterId
-        });
+        // Step 1: Fetch user data from NewUser schema to get the user's requirements
+        const userData = await NewUser.findOne({ _id: userId });
 
-        if (recruiterRequirements.length === 0) {
-            return res.status(404).json({ status: "Error", msg: "No requirements found for this recruiter" });
+        // Step 2: Fetch recruiter data from NewUser schema to get the recruiter's requirements
+        const recruiterData = await NewUser.findOne({ _id: recruiterId });
+
+        // Check if both user and recruiter data are found
+        if (!userData || !recruiterData) {
+            return res.status(404).json({ status: "Error", msg: "User or recruiter not found" });
         }
 
-        // Step 2: Collect reqIds from the recruiterRequirements
-        const reqIds = recruiterRequirements.map(req => req.reqId);
+        // Step 3: Get both the user's and recruiter's Requirements
+        const userRequirements = userData.Requirements;
+        const recruiterRequirements = recruiterData.Requirements;
 
-        // Step 3: Fetch requirement details using reqIds
+        // Step 4: Find the common requirements by comparing the reqIds in both arrays
+        const commonRequirements = userRequirements.filter(userReq => {
+            return recruiterRequirements.some(recruiterReq => recruiterReq._id.toString() === userReq._id.toString());
+        });
+
+        // If no matching requirements are found
+        if (commonRequirements.length === 0) {
+            return res.status(404).json({ status: "Error", msg: "No common requirements found for the user and recruiter" });
+        }
+
+        // Step 5: Fetch the full details of the common requirements using their reqIds
+        const reqIds = commonRequirements.map(req => req._id);
         const requirements = await NewRequirment.find({
-            _id: { $in: reqIds } // Convert string ids to ObjectId
+            _id: { $in: reqIds } // Find requirements with matching _id in the reqIds
         });
 
-        // Step 4: Create a map to store candidate counts for each reqId
-        const reqIdToCandidateCount = {};
+        // Step 6: For each requirement, calculate the candidate count based on the length of the candidates array
+        const requirementsWithCandidateCount = await Promise.all(requirements.map(async (req) => {
+            // Find the specific requirement in the recruiterData
+            const recruiterReq = recruiterRequirements.find(rReq => rReq._id.toString() === req._id.toString());
 
-        // Populate the candidate counts, only counting candidates with savedStatus as "Uploaded"
-        recruiterRequirements.forEach(req => {
-            const uploadedCandidatesCount = req.candidates.filter(candidate => candidate.savedStatus === "Uploaded").length;
-            if (reqIdToCandidateCount[req.reqId]) {
-                reqIdToCandidateCount[req.reqId] += uploadedCandidatesCount;
-            } else {
-                reqIdToCandidateCount[req.reqId] = uploadedCandidatesCount;
-            }
-        });
+            // Query the CandidateModel to find the number of candidates for each requirement and recruiter
+            const candidateData = await CandidateModel.findOne({
+                reqId: req._id,
+                recruiterId: recruiterId
+            });
 
-        // Step 5: Attach candidate counts to the requirement details
-        const requirementsWithCounts = requirements.map(req => ({
-            ...req.toObject(),
-            candidateCount: reqIdToCandidateCount[req._id.toString()] || 0
+            // If candidate data exists, filter the candidates whose savedStatus is "Uploaded" and get the count
+            const uploadedCandidatesCount = candidateData && Array.isArray(candidateData.candidates)
+                ? candidateData.candidates.filter(candidate => candidate.savedStatus === "Uploaded").length
+                : 0;
+
+            return {
+                ...req.toObject(),
+                candidateCount: uploadedCandidatesCount
+            };
         }));
 
-        // Step 6: Send the response with the requirements and candidate counts
+        // Step 7: Send the response with the matching requirements and candidate counts
         res.json({
             status: "Success",
-            requirements: requirementsWithCounts
+            requirements: requirementsWithCandidateCount
         });
     } catch (err) {
         console.error(err);
         res.status(500).json({ status: "Error", msg: err.message });
     }
 });
+
 
 app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
     const userId = req.params.userId;
@@ -2081,20 +2380,22 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
                 const usernamesForThisRequirement = assignedUsersForThisRequirement.map(user => user.EmployeeName);
                 const userCountForThisRequirement = assignedUsersForThisRequirement.length;
 
-                // Step 6: Get candidate details
+                // Step 6: Get candidate details with savedStatus filter applied only where needed
                 const requirementWithCandidates = await CandidateModel.find({
-                    reqId: requirementId,  // Check if reqId matches
+                    reqId: requirementId,
                     recruiterId: { 
-                        $in: [...teamIds, userId]  // Spread teamIds and add userId to the $in array
+                        $in: [...teamIds, userId]
                     }
-                }).select('candidates reqId recruiterId');           
+                }).select('candidates reqId recruiterId');
 
-                // Separate candidates based on recruiterId (user vs team) and apply savedStatus filter
-                const userCandidates = requirementWithCandidates ? requirementWithCandidates.flatMap(req => 
-                    req.candidates.filter(candidate => 
-                        req.recruiterId.toString() === userId
-                    )
+                // All user candidates regardless of savedStatus
+                const totalUserCandidatesDetails = requirementWithCandidates ? requirementWithCandidates.flatMap(req =>
+                    req.candidates.filter(candidate => req.recruiterId.toString() === userId)
                 ) : [];
+                const totalUserCandidatesCount = totalUserCandidatesDetails.length;
+
+                // Filtered user and team candidates by `savedStatus: "Uploaded"`
+                const userCandidates = totalUserCandidatesDetails.filter(candidate => candidate.savedStatus === 'Uploaded');
 
                 const teamCandidates = requirementWithCandidates ? requirementWithCandidates.flatMap(req => 
                     req.candidates.filter(candidate => 
@@ -2102,7 +2403,7 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
                     )
                 ) : [];
 
-                // Total candidate count
+                // Total candidate count with "Uploaded" status only
                 const totalCandidateCount = userCandidates.length + teamCandidates.length;
 
                 // Filter for today's candidates for both user and team
@@ -2118,7 +2419,7 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
 
                 const todayCandidateCount = todayUserCandidates.length + todayTeamCandidates.length;
 
-                // Step 7: Combine user and team candidates into totalCandidatesDetails
+                // Combine user and team candidates into totalCandidatesDetails
                 const totalCandidatesDetails = [...userCandidates, ...teamCandidates];
 
                 // Combine today's user and team candidates
@@ -2135,10 +2436,11 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
                     teamCandidatesCount: teamCandidates.length, // Only "Uploaded" team candidates are counted here
                     todayUserCandidates: todayUserCandidates,
                     todayTeamCandidates: todayTeamCandidates, // Only "Uploaded" team candidates for today
-                    totalUserCandidatesDetails: userCandidates,
+                    totalUserCandidatesDetails: totalUserCandidatesDetails, // Both "Saved" and "Uploaded" user candidates
+                    totalUserCandidatesCount: totalUserCandidatesCount, // Count of both "Saved" and "Uploaded" user candidates
                     totalTeamCandidatesDetails: teamCandidates, // Only "Uploaded" team candidates
-                    totalCandidatesDetails: totalCandidatesDetails, // All candidates (user + team)
-                    combinedTodayCandidates: combinedTodayCandidates // Combined today candidates (user + team)
+                    totalCandidatesDetails: totalCandidatesDetails, // All "Uploaded" candidates (user + team)
+                    combinedTodayCandidates: combinedTodayCandidates // Combined today "Uploaded" candidates (user + team)
                 };
             })
         );
@@ -2149,8 +2451,6 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
         res.status(500).json({ message: "Server Error", error });
     }
 });
-
-
 
 app.delete('/deleteRequirement/:regId', async (req, res) => {
     const regId = req.params.regId; // Get the regId from the request parameters
@@ -2363,22 +2663,6 @@ app.get('/remainingusers/:id', async (req, res) => {
         res.status(500).json({ status: "Error", msg: err.message });
     }
 });
-
-
-
-
-  
-
-
-
-
-
-
-
-
-
-
-
 
 
 
