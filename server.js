@@ -99,7 +99,7 @@ let ConnectedtoMDB= async()=>{
 }
  ConnectedtoMDB();
  
- let userSchema = new mongoose.Schema({
+  let userSchema = new mongoose.Schema({
     EmpCode: {
         type: String,
         required: true,
@@ -712,11 +712,6 @@ let clientSchema= new mongoose.Schema({
     }
 }
 );
-
-// app.get("/ClientsList",async(req,res)=>{
-//     let ClientsList = await NewClient.find();
-//     res.json(ClientsList);
-// })
 
 app.get("/ClientsList", async (req, res) => {
     try {
@@ -1553,6 +1548,7 @@ app.get('/api/requirements/:id/claimedByDetails', async (req, res) => {
         console.log(error);
     }
 });
+
 // Get the number of candidates added by each recruiter for a specific reqId
 app.get('/api/recruiters/:reqId', async (req, res) => {
     const { reqId } = req.params;
@@ -1576,6 +1572,71 @@ app.get('/api/recruiters/:reqId', async (req, res) => {
         requirements.forEach(requirement => {
             requirement.candidates
                 .filter(candidate => candidate.savedStatus === 'Uploaded') // Filter candidates by savedStatus
+                .forEach(candidate => {
+                    candidate.recruiterId.forEach(recruiterId => {
+                        // Count only "Uploaded" candidates for each recruiter
+                        recruiterIdToCandidateCount[recruiterId] = (recruiterIdToCandidateCount[recruiterId] || 0) + 1;
+
+                        // Add only "Uploaded" candidate details to the recruiter
+                        if (!recruiterIdToCandidates[recruiterId]) {
+                            recruiterIdToCandidates[recruiterId] = []; // Initialize array for the first time
+                        }
+                        recruiterIdToCandidates[recruiterId].push(candidate);
+                    });
+                });
+        });
+
+        const recruiterIds = Object.keys(recruiterIdToCandidateCount);
+
+        if (recruiterIds.length === 0) {
+            return res.status(404).json({ message: 'No recruiters found for these requirements' });
+        }
+
+        // Fetch recruiter details from NewUser collection
+        const recruitersDetails = await NewUser.find({ _id: { $in: recruiterIds } }).exec();
+
+        if (recruitersDetails.length === 0) {
+            return res.status(404).json({ message: 'No details found for recruiters' });
+        }
+
+        // Create the response with recruiter info and associated "Uploaded" candidate details
+        const recruitersWithCandidateCountAndDetails = recruitersDetails.map(recruiter => ({
+            recruiter,
+            candidateCount: recruiterIdToCandidateCount[recruiter._id.toString()],
+            candidates: recruiterIdToCandidates[recruiter._id.toString()] || [], // Include only "Uploaded" candidate details
+            reqId // Include the reqId in the response
+        }));
+
+        res.status(200).json({ recruiters: recruitersWithCandidateCountAndDetails });
+    } catch (error) {
+        res.status(500).json({ message: 'Server error', error });
+        console.error('Server Error:', error);
+    }
+});
+
+// Expanding of User Uploads
+app.get('/userUploads/:reqId', async (req, res) => {
+    const { reqId } = req.params;
+
+    if (!reqId) {
+        return res.status(400).json({ error: 'reqId is required' });
+    }
+
+    try {
+        // Fetch requirements based on reqId
+        const requirements = await CandidateModel.find({ reqId }).exec();
+
+        if (requirements.length === 0) {
+            return res.status(404).json({ message: 'Requirement(s) not found' });
+        }
+
+        const recruiterIdToCandidateCount = {};
+        const recruiterIdToCandidates = {}; // Object to map recruiterId to candidate details
+
+        // Iterate through each requirement and its candidates
+        requirements.forEach(requirement => {
+            requirement.candidates
+                // .filter(candidate => candidate.savedStatus === 'Uploaded') // Filter candidates by savedStatus
                 .forEach(candidate => {
                     candidate.recruiterId.forEach(recruiterId => {
                         // Count only "Uploaded" candidates for each recruiter
@@ -2540,6 +2601,44 @@ app.put('/updatestatus/:candidateId', async (req, res) => {
 });
 
 // Requirments in Admin 
+// app.get('/admingetrequirements', async (req, res) => {
+//     try {
+//         // Fetch all requirements
+//         const requirements = await NewRequirment.find();
+
+//         // Initialize an array to hold the final response
+//         const enrichedRequirements = [];
+
+//         // Loop through each requirement
+//         for (const requirement of requirements) {
+//             // Extract clientId and reqId from the requirement
+//             const clientId = requirement.clientId;
+//             const reqId = requirement._id; // Assuming this is the reqId
+
+//             // Find users associated with this clientId in their Clients array or reqId in Requirements array
+//             const users = await NewUser.find({
+//                 $or: [
+//                     { Clients: clientId },
+//                     { Requirements: reqId }
+//                 ]
+//             });
+
+//             // Get the user count
+//             const userCount = users.length;
+//             // Add the requirement along with user data to the enriched requirements array
+//             enrichedRequirements.push({
+//                 ...requirement._doc, // Spread the requirement fields
+//                 userCount, // Add the user count
+//                 userDetails: users // Add the user details if needed
+//             });
+//         }
+
+//         // Send the enriched requirements data as response
+//         res.json(enrichedRequirements);
+//     } catch (err) {
+//         res.status(500).json({ status: "Error", msg: err.message });
+//     }
+// });
 app.get('/admingetrequirements', async (req, res) => {
     try {
         // Fetch all requirements
@@ -2550,9 +2649,8 @@ app.get('/admingetrequirements', async (req, res) => {
 
         // Loop through each requirement
         for (const requirement of requirements) {
-            // Extract clientId and reqId from the requirement
             const clientId = requirement.clientId;
-            const reqId = requirement._id; // Assuming this is the reqId
+            const reqId = requirement._id;
 
             // Find users associated with this clientId in their Clients array or reqId in Requirements array
             const users = await NewUser.find({
@@ -2562,13 +2660,33 @@ app.get('/admingetrequirements', async (req, res) => {
                 ]
             });
 
-            // Get the user count
-            const userCount = users.length;
-            // Add the requirement along with user data to the enriched requirements array
+            // Query the MainSchema to find candidates linked to the reqId
+            const requirementData = await CandidateModel.findOne({ reqId });
+
+            // Ensure candidates is not null
+            const candidates = requirementData ? requirementData.candidates : [];
+
+            // Filter candidates with savedStatus as "Uploaded"
+            const uploadedCandidates = candidates.filter(candidate =>
+                candidate.savedStatus === "Uploaded"
+            );
+
+            // Filter candidates with savedStatus as "Uploaded" and an empty Status array
+            const noactionCandidates = candidates.filter(candidate =>
+                candidate.savedStatus === "Uploaded" &&
+                Array.isArray(candidate.Status) && candidate.Status.length === 0
+            );
+
+            const noactionCandidatesCount = noactionCandidates.length;
+
+            // Add the requirement along with user and candidate data to the enriched requirements array
             enrichedRequirements.push({
-                ...requirement._doc, // Spread the requirement fields
-                userCount, // Add the user count
-                userDetails: users // Add the user details if needed
+                ...requirement._doc,      // Spread the requirement fields
+                userCount: users.length,  // Add the user count
+                userDetails: users,       // Add the user details if needed
+                uploadedCandidates,       // Add filtered uploaded candidates
+                noactionCandidates,        // Add no-action candidates (Status is empty)
+                noactionCandidatesCount
             });
         }
 
@@ -2663,6 +2781,7 @@ app.get('/remainingusers/:id', async (req, res) => {
         res.status(500).json({ status: "Error", msg: err.message });
     }
 });
+
 
 
 
