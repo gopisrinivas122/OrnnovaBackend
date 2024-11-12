@@ -1354,7 +1354,10 @@ const CandidateSchema = new mongoose.Schema({
     recruiterId: [{
         type: String,
         required: true
-    }]
+    }],
+    recruiterName:{
+        type:String,
+    }
 });
 // Define the main schema that includes reqId, recruiterId, candidates, and assessments
 const MainSchema = new mongoose.Schema({
