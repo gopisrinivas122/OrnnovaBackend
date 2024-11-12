@@ -14,7 +14,6 @@ const { truncate } = require("fs");
 dotenv.config()
 
 // email Config
-
 const transporter = nodemailer.createTransport({
     service: "gmail",
     auth:{
