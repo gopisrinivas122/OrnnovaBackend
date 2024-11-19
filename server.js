@@ -62,7 +62,7 @@ app.use(express.json());
 // Define allowed origins
 const allowedOrigins = [
   'https://frontend-fge2.vercel.app', 
-  'https://frontend-theta-mocha-38.vercel.app'
+  'https://frontend-theta-mocha-38.vercel.app',
     'https://ornnova.com/HR'
 ];
 
