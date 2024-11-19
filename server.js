@@ -63,6 +63,7 @@ app.use(express.json());
 const allowedOrigins = [
   'https://frontend-fge2.vercel.app', 
   'https://frontend-theta-mocha-38.vercel.app'
+    'https://ornnova.com/HR'
 ];
 
 // Configure CORS options
