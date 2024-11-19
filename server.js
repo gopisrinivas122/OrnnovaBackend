@@ -79,28 +79,25 @@ app.use(express.json());
 //   credentials: true,  // Allow cookies to be sent
 // };
 
-// // Apply CORS middleware
-// app.use(cors(corsOptions));
-
 const allowedOrigins = [
   'https://frontend-fge2.vercel.app', 
   'https://frontend-theta-mocha-38.vercel.app',
-  'https://ornnova.com', // Make sure this matches exactly with your front-end domain
-  'https://ornnova.com/HR'  // Add this if you have a specific subdirectory path
+  'https://ornnova.com'  // Correct domain
 ];
 
 const corsOptions = {
   origin: function (origin, callback) {
     if (allowedOrigins.indexOf(origin) !== -1 || !origin) {
-      callback(null, true);
+      callback(null, true);  // If origin is allowed, continue the request
     } else {
-      callback(new Error('Not allowed by CORS'));
+      callback(new Error('Not allowed by CORS'));  // Block the request
     }
   },
   credentials: true,  // Allow cookies to be sent
 };
 
-app.use(cors(corsOptions));
+app.use(cors(corsOptions));  // Apply the CORS middleware
+
 
 
   
