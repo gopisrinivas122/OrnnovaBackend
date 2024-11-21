@@ -102,7 +102,10 @@ app.use(cors(corsOptions));  // Apply the CORS middleware
 
   
 app.use("/www", express.static("uploads"));
-app.use('/uploads', express.static('uploads'));
+
+// app.use('/uploads', express.static('uploads'));
+
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.listen(process.env.PORT,()=>{
     console.log("Listening to Port 7993");
 });
@@ -110,7 +113,7 @@ app.listen(process.env.PORT,()=>{
 let ConnectedtoMDB= async()=>{
     try{
         await mongoose.connect("mongodb+srv://bgopisrinivas:bgopisrinivas@hrmanagment.5tma2.mongodb.net/HRManagment");
-        console.log("Succesfuly Connected to MDB ✅");
+        console.log("Succesfully Connected to MDB ✅");
     }catch{
         console.log("Failed to Connect to MDB ❌");
     }
@@ -410,87 +413,143 @@ app.post("/login", upload.none(), async (req, res) => {
 
 const secretKey = process.env.SECRET_KEY;
 
-app.post("/sendpasswordlink",async (req,res)=>{
+app.post("/sendpasswordlink", async (req, res) => {
     console.log(req.body);
-    const {email} = req.body;
+    const { email } = req.body;
 
     if (!email) {
-        res.status(401).json({status:401,message:"Enter Your Email"})
+        return res.status(401).json({ status: 401, message: "Enter Your Email" });
     }
-    try {
-        const userfind = await NewUser.findOne({Email:email});
-        
-        // token generate for reset password
 
-        const token = jwt.sign({_id:userfind._id},secretKey,{expiresIn:"300s"});
-        
-        const setusertoken = await NewUser.findByIdAndUpdate({_id:userfind._id},{verifytoken:token},{new:true});
-         
+    try {
+        // Find user by email
+        const userfind = await NewUser.findOne({ Email: email });
+
+        if (!userfind) {
+            return res.status(401).json({ status: 401, message: "User not found with this email" });
+        }
+
+        // Generate a token for password reset
+        const token = jwt.sign({ _id: userfind._id }, secretKey, { expiresIn: "300s" });
+
+        // Update user with the generated token
+        const setusertoken = await NewUser.findByIdAndUpdate(
+            { _id: userfind._id },
+            { verifytoken: token },
+            { new: true }
+        );
+
         if (setusertoken) {
             const mailOptions = {
-                from:process.env.EMAIL,
-                to:email,
-                subject:"Password Reset Link",
-                text:`This link is valid for 5minutes http://localhost:3000/ResetPassword/${userfind.id}/${setusertoken.verifytoken}`
-            }
+                from: process.env.EMAIL,
+                to: email,
+                subject: "Password Reset Link",
+                text: `This link is valid for 5 minutes : https://ornnova.com/HR/ResetPassword/${userfind._id}/${setusertoken.verifytoken}`
+            };
 
-            transporter.sendMail(mailOptions,(error,info)=>{
-                if(error){
-                    console.log("Error",error);
-                    res.status(401).json({status:401,message:"Email Not Send"})
-                }else{
-                    console.log("Email Sent",info.response);
-                    res.status(201).json({status:201,message:"Email Sent Successfully"})
+            transporter.sendMail(mailOptions, (error, info) => {
+                if (error) {
+                    console.log("Error", error);
+                    return res.status(401).json({ status: 401, message: "Email Not Sent" });
+                } else {
+                    console.log("Email Sent", info.response);
+                    return res.status(201).json({ status: 201, message: "Email Sent Successfully" });
                 }
-            })
+            });
+        } else {
+            return res.status(500).json({ status: 500, message: "Error updating token" });
         }
-        
     } catch (error) {
-        res.status(401).json({status:401,message:"Invalid User"})
-
+        console.error(error);
+        return res.status(500).json({ status: 500, message: "Internal Server Error" });
     }
-})
+});
+
 //  verify user for forgot password
 
-app.get("/ResetPasswordpage/:id/:token",async(req,res)=>{
-    const {id,token} = req.params;
+// app.get("/ResetPasswordpage/:id/:token",async(req,res)=>{
+//     const {id,token} = req.params;
+//     try {
+//         const validuser = await NewUser.findOne({_id:id,verifytoken:token});
+//         const verifyToken = jwt.verify(token,secretKey);
+//         console.log(verifyToken)
+//         if (validuser && verifyToken._id){
+//              res.status(201).json({status:201,validuser})
+//         }else{
+//             res.status(401).json({status:401,message:"User Not Exist"})
+
+//         }
+//     } catch (error) {
+//         res.status(401).json({status:401,error })
+
+//     }
+// })
+
+app.get("/ResetPasswordpage/:id/:token", async (req, res) => {
+    const { id, token } = req.params;
     try {
-        const validuser = await NewUser.findOne({_id:id,verifytoken:token});
-        const verifyToken = jwt.verify(token,secretKey);
-        console.log(verifyToken)
-        if (validuser && verifyToken._id){
-             res.status(201).json({status:201,validuser})
-        }else{
-            res.status(401).json({status:401,message:"User Not Exist"})
-
-        }
-    } catch (error) {
-        res.status(401).json({status:401,error })
-
-    }
-})
-//  Change Password
-app.post("/:id/:token",async(req,res)=>{
-    const {id,token} = req.params;
-    const{password} = req.body;
-    try{
-        const validuser = await NewUser.findOne({_id:id,verifytoken:token});
-        const verifyToken = jwt.verify(token,secretKey);
+        const validuser = await NewUser.findOne({ _id: id, verifytoken: token });
+        const verifyToken = jwt.verify(token, secretKey);
 
         if (validuser && verifyToken._id) {
-            // const newpassword = await bcrypt.hash(password,12);
-            const newpassword = await (password);
-            const setnewuserpass = await NewUser.findByIdAndUpdate({_id:id},{Password:newpassword})
-         setnewuserpass.save();
-         res.status(201).json({status:201,setnewuserpass})
-        }else{
-            res.status(401).json({status:401,message:"User Not Exist"})
-
+            res.status(201).json({ status: 201, validuser });
+        } else {
+            res.status(401).json({ status: 401, message: "User Not Exist" });
         }
-    }catch(error){
-        res.status(401).json({status:401,error })
+    } catch (error) {
+        res.status(401).json({ status: 401, error });
     }
-})
+});
+
+
+
+//  Change Password
+// app.post("/:id/:token",async(req,res)=>{
+//     const {id,token} = req.params;
+//     const{password} = req.body;
+//     try{
+//         const validuser = await NewUser.findOne({_id:id,verifytoken:token});
+//         const verifyToken = jwt.verify(token,secretKey);
+
+//         if (validuser && verifyToken._id) {
+//             // const newpassword = await bcrypt.hash(password,12);
+//             const newpassword = await (password);
+//             const setnewuserpass = await NewUser.findByIdAndUpdate({_id:id},{Password:newpassword})
+//          setnewuserpass.save();
+//          res.status(201).json({status:201,setnewuserpass})
+//         }else{
+//             res.status(401).json({status:401,message:"User Not Exist"})
+
+//         }
+//     }catch(error){
+//         res.status(401).json({status:401,error })
+//     }
+// })
+
+app.post("/Changepassword/:id/:token", async (req, res) => {
+    const { id, token } = req.params;
+    const { password } = req.body;
+
+    try {
+        const validuser = await NewUser.findOne({ _id: id, verifytoken: token });
+        const verifyToken = jwt.verify(token, secretKey);
+
+        if (validuser && verifyToken._id) {
+            const newpassword = password; // Make sure you're handling the password correctly
+            const setnewuserpass = await NewUser.findByIdAndUpdate({ _id: id }, { Password: newpassword });
+
+            // Save the updated password
+            await setnewuserpass.save();
+
+            // Return a successful response
+            res.status(201).json({ status: 201, message: "Password updated successfully" });
+        } else {
+            res.status(401).json({ status: 401, message: "User not found or token is invalid" });
+        }
+    } catch (error) {
+        res.status(500).json({ status: 500, message: "Server error", error });
+    }
+});
 
 app.delete("/deleteUser/:id",async(req,res)=>{
     console.log(req.params.id);
@@ -1245,7 +1304,7 @@ const CandidateSchema = new mongoose.Schema({
         required: true
     },
     lwd: {
-        type: Date
+        type: String
     },
     currentLocation: {
         type: String,
@@ -1296,7 +1355,7 @@ const CandidateSchema = new mongoose.Schema({
         type: String
     },
     interviewDate: {
-        type: Date
+        type: String
     },
     educationalQualification: {
         type: String,
@@ -2604,9 +2663,3 @@ app.get('/remainingusers/:id', async (req, res) => {
 
 
   
-
-
-
-
-
-
