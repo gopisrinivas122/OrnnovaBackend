@@ -2549,12 +2549,27 @@ app.get('/admingetrequirements', async (req, res) => {
                 candidate.savedStatus === "Uploaded"
             );
 
-            // Filter candidates with savedStatus as "Uploaded" and an empty Status array
-            const noactionCandidates = candidates.filter(candidate =>
+            
+            // Fetch all documents matching the current reqId
+            const relatedDocuments = await CandidateModel.find({ reqId });
+
+            // Aggregate all candidates for this reqId
+            const allCandidates = relatedDocuments.reduce((acc, doc) => {
+                return acc.concat(doc.candidates || []);
+            }, []);
+            // Filter no-action-taken candidates
+            const noactionCandidates = allCandidates.filter(candidate =>
                 candidate.savedStatus === "Uploaded" &&
-                Array.isArray(candidate.Status) && candidate.Status.length === 0
+                (
+                    !candidate.Status || // Status is null or undefined
+                    candidate.Status.length === 0 || // Status array is empty
+                    candidate.Status.every(status =>
+                        !status.Status || status.Status.length === 0 // No valid status
+                    )
+                )
             );
 
+            // Count no-action-taken candidates
             const noactionCandidatesCount = noactionCandidates.length;
 
             // Add the requirement along with user and candidate data to the enriched requirements array
