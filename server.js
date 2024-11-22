@@ -101,7 +101,7 @@ app.use(cors(corsOptions));  // Apply the CORS middleware
 
 
   
-app.use("/www", express.static("uploads"));
+// app.use("/www", express.static("uploads"));
 
 // Serve files from the persistent storage mounted at /var/uploads
 app.use('/uploads', express.static('/var/uploads'));
