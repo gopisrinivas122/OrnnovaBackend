@@ -380,11 +380,11 @@ app.get("/getUserDataToADDtoTeam", async (req, res) => {
 });
 
 app.post("/login", upload.none(), async (req, res) => {
-    console.log(req.body);
+    // console.log(req.body);
 
     // Fetch user data based on the email provided
     let fetchedData = await NewUser.find({ Email: req.body.Email });
-    console.log(fetchedData);
+    // console.log(fetchedData);
 
     // Check if the user exists
     if (fetchedData.length > 0) {
@@ -414,7 +414,7 @@ app.post("/login", upload.none(), async (req, res) => {
 const secretKey = process.env.SECRET_KEY;
 
 app.post("/sendpasswordlink", async (req, res) => {
-    console.log(req.body);
+    // console.log(req.body);
     const { email } = req.body;
 
     if (!email) {
@@ -552,7 +552,7 @@ app.post("/Changepassword/:id/:token", async (req, res) => {
 });
 
 app.delete("/deleteUser/:id",async(req,res)=>{
-    console.log(req.params.id);
+    // console.log(req.params.id);
     try {
       await NewUser.deleteMany({_id:req.params.id});
     res.json({status:"success",msg:`User Deleted Successfully✅`});
@@ -736,7 +736,7 @@ let clientSchema= new mongoose.Schema({
           
         });
         await newClient.save();
-        console.log(req.body);
+        // console.log(req.body);
         res.json({status:"Success",msg:" Client Created Successfully✅"});
     }catch(error){
         res.json({status:"Failed",error:error,msg:"Invalid Details ❌"});
@@ -811,7 +811,7 @@ app.get("/clientDetails",async(req,res)=>{
 })
 
 app.delete("/deleteClient/:id",async(req,res)=>{
-    console.log(req.params.id);
+    // console.log(req.params.id);
     try {
       await NewClient.deleteMany({_id:req.params.id});
     res.json({status:"success",msg:`Client Deleted Successfully✅`});
@@ -826,7 +826,7 @@ app.delete("/deleteClient/:id",async(req,res)=>{
     res.json(clientdetails); 
  })  
 app.put("/UpdateClient/:id", async(req,res)=>{
-    console.log(req.params.id);
+    // console.log(req.params.id);
     try {
         if(req.body.ClientCode.length>0){
           await NewClient.updateOne({_id:req.body.id},
@@ -1019,7 +1019,7 @@ const formattedAssessments = Array.isArray(assessments) ? assessments.map(item =
         assessments:formattedAssessments
         });
         await newRequirment.save();
-        console.log(req.body);
+        // console.log(req.body);
         res.json({status:"Success",msg:" Requirment Added Successfully✅"});
     }catch(error){
         res.json({status:"Failed",error:error,msg:"Invalid Details ❌"});
@@ -1114,7 +1114,7 @@ app.get('/getrequirements', async (req, res) => {
   
   app.get('/getHomeReqData/:userId', async (req, res) => {
     const { userId } = req.params;
-    console.log(userId);
+    // console.log(userId);
 
     try {
         // Step 1: Find the user by userId
@@ -1418,7 +1418,7 @@ const uploadFields = upload.fields([
 app.post('/Candidates', uploadFields, async (req, res) => {
     try {
         const { reqId, recruiterId, candidate } = req.body;
-       console.log(req.body);
+       // console.log(req.body);
         // Log candidate data for debugging
         // console.log('Received candidate string:', candidate);
 
@@ -1758,7 +1758,7 @@ app.get('/userUploads/:reqId/:userId', async (req, res) => {
 app.get('/api/candidates', async (req, res) => {
     try {
         const { recruiterId, reqId } = req.query;
-        console.log('Fetching candidates with:', { recruiterId, reqId });
+        // console.log('Fetching candidates with:', { recruiterId, reqId });
 
         if (!recruiterId || !reqId) {
             return res.status(400).json({ message: 'Recruiter ID and Requirement ID are required' });
@@ -2459,7 +2459,7 @@ app.delete('/deleteRequirement/:regId', async (req, res) => {
 app.put('/editRequirement/:id', async (req, res) => {
     const { id } = req.params; // Extract the requirement ID from the URL
     const updateData = req.body; // Get the data to update from the request body
-    console.log(id)
+    // console.log(id)
     try {
         // Find the requirement by ID and update it
         const updatedRequirement = await NewRequirment.findByIdAndUpdate(id, updateData, {
@@ -2485,7 +2485,7 @@ app.put('/updatestatus/:candidateId', async (req, res) => {
     const candidateId = req.params.candidateId;
     const { status } = req.body;
 
-    console.log('Request body:', req.body); // Log request body to debug
+    // console.log('Request body:', req.body); // Log request body to debug
 
     if (!status) {
         return res.status(400).json({ message: 'Status is required' });
