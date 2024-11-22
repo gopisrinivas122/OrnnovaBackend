@@ -1514,15 +1514,15 @@ app.post('/Candidates', uploadFields, async (req, res) => {
         // Attach file paths if they exist and ensure proper formatting
         if (req.files['updatedResume']) {
             const filePath = req.files['updatedResume'][0].path;
-            candidateData.updatedResume = `/uploads/${path.basename(filePath)}`;
+            candidateData.updatedResume = `/uploads/${path.basename(filePath)}`; // Ensure no extra slash
         }
         if (req.files['ornnovaProfile']) {
             const filePath = req.files['ornnovaProfile'][0].path;
-            candidateData.ornnovaProfile = `/uploads/${path.basename(filePath)}`;
+            candidateData.ornnovaProfile = `/uploads/${path.basename(filePath)}`; // Ensure no extra slash
         }
         if (req.files['candidateImage']) {
             const filePath = req.files['candidateImage'][0].path;
-            candidateData.candidateImage = `/uploads/${path.basename(filePath)}`;
+            candidateData.candidateImage = `/uploads/${path.basename(filePath)}`; // Ensure no extra slash
         }
 
         // Check if a record with the same reqId and recruiterId exists
@@ -1538,7 +1538,7 @@ app.post('/Candidates', uploadFields, async (req, res) => {
             await newCandidate.save();
         }
 
-        res.status(200).json({ message: 'Candidate data saved successfully ✅' });
+        res.status(200).json({ message: 'Candidate data saved successfully' });
     } catch (error) {
         console.error('Error saving candidate data:', error);
         res.status(500).json({ message: 'Failed to save candidate data' });
