@@ -24,25 +24,53 @@ const transporter = nodemailer.createTransport({
 
 const path = require('path');
 
+// const storage = multer.diskStorage({
+//     destination: (req, file, cb) => {
+//         cb(null, 'uploads/');
+//     },
+//     filename: (req, file, cb) => {
+//         cb(null, Date.now() + path.extname(file.originalname));
+//     }
+// });
+
+// const upload = multer({
+//     storage: multer.diskStorage({
+//         destination: (req, file, cb) => {
+//             cb(null, '/var/uploads');
+//         },
+//         filename: (req, file, cb) => {
+//             cb(null, Date.now() + path.extname(file.originalname));
+//         }
+//     }),
+//     fileFilter: (req, file, cb) => {
+//         const filetypes = /jpeg|jpg|png|pdf/;
+//         const mimetype = filetypes.test(file.mimetype);
+//         const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
+
+//         if (mimetype && extname) {
+//             return cb(null, true);
+//         }
+//         cb(new Error('Invalid file type'));
+//     }
+// });
+
+// Multer storage configuration
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        cb(null, 'uploads/');
+        // Save files to the persistent directory
+        cb(null, '/var/uploads');
     },
     filename: (req, file, cb) => {
+        // Save the file with a unique timestamped name
         cb(null, Date.now() + path.extname(file.originalname));
     }
 });
 
+// Multer upload configuration
 const upload = multer({
-    storage: multer.diskStorage({
-        destination: (req, file, cb) => {
-            cb(null, '/var/uploads');
-        },
-        filename: (req, file, cb) => {
-            cb(null, Date.now() + path.extname(file.originalname));
-        }
-    }),
+    storage,
     fileFilter: (req, file, cb) => {
+        // Allowed file types
         const filetypes = /jpeg|jpg|png|pdf/;
         const mimetype = filetypes.test(file.mimetype);
         const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
@@ -1408,25 +1436,75 @@ const MainSchema = new mongoose.Schema({
 
 const CandidateModel = mongoose.model('Candidate', MainSchema); // Or the correct model name
 
+// const uploadFields = upload.fields([
+//     { name: 'updatedResume', maxCount: 1 },
+//     { name: 'ornnovaProfile', maxCount: 1 },
+//     { name: 'candidateImage', maxCount: 1 }
+// ]);
+
+// app.post('/Candidates', uploadFields, async (req, res) => {
+//     try {
+//         const { reqId, recruiterId, candidate } = req.body;
+//        // console.log(req.body);
+//         // Log candidate data for debugging
+//         // console.log('Received candidate string:', candidate);
+
+//         // Check if candidate is provided
+//         if (!candidate) {
+//             throw new Error('Candidate data is missing or invalid');
+//         }
+
+//         // Parse candidate data
+//         let candidateData;
+//         try {
+//             candidateData = JSON.parse(candidate);
+//         } catch (parseError) {
+//             throw new Error('Failed to parse candidate data: ' + parseError.message);
+//         }
+
+//         // Attach file paths if they exist
+//         if (req.files['updatedResume']) candidateData.updatedResume = req.files['updatedResume'][0].path;
+//         if (req.files['ornnovaProfile']) candidateData.ornnovaProfile = req.files['ornnovaProfile'][0].path;
+//         if (req.files['candidateImage']) candidateData.candidateImage = req.files['candidateImage'][0].path;
+
+//         // Check if a record with the same reqId and recruiterId exists
+//         let existingCandidate = await CandidateModel.findOne({ reqId, recruiterId });
+
+//         if (existingCandidate) {
+//             // Add the new candidate to the existing candidates array
+//             existingCandidate.candidates.push(candidateData);
+//             await existingCandidate.save();
+//         } else {
+//             // Create a new document with the candidate details
+//             const newCandidate = new CandidateModel({ reqId, recruiterId, candidates: [candidateData] });
+//             await newCandidate.save();
+//         }
+
+//         res.status(200).json({ message: 'Candidate data saved successfully' });
+//     } catch (error) {
+//         console.error('Error saving candidate data:', error);
+//         res.status(500).json({ message: 'Failed to save candidate data' });
+//     }
+// });
+
+// Multer configuration for handling multiple file uploads
 const uploadFields = upload.fields([
     { name: 'updatedResume', maxCount: 1 },
     { name: 'ornnovaProfile', maxCount: 1 },
     { name: 'candidateImage', maxCount: 1 }
 ]);
 
+// Candidate upload API
 app.post('/Candidates', uploadFields, async (req, res) => {
     try {
         const { reqId, recruiterId, candidate } = req.body;
-       // console.log(req.body);
-        // Log candidate data for debugging
-        // console.log('Received candidate string:', candidate);
 
-        // Check if candidate is provided
+        // Validate input
         if (!candidate) {
             throw new Error('Candidate data is missing or invalid');
         }
 
-        // Parse candidate data
+        // Parse the candidate JSON data
         let candidateData;
         try {
             candidateData = JSON.parse(candidate);
@@ -1434,10 +1512,19 @@ app.post('/Candidates', uploadFields, async (req, res) => {
             throw new Error('Failed to parse candidate data: ' + parseError.message);
         }
 
-        // Attach file paths if they exist
-        if (req.files['updatedResume']) candidateData.updatedResume = req.files['updatedResume'][0].path;
-        if (req.files['ornnovaProfile']) candidateData.ornnovaProfile = req.files['ornnovaProfile'][0].path;
-        if (req.files['candidateImage']) candidateData.candidateImage = req.files['candidateImage'][0].path;
+        // Attach file paths if files are uploaded
+        if (req.files['updatedResume']) {
+            const filePath = req.files['updatedResume'][0].path;
+            candidateData.updatedResume = `/uploads/${path.basename(filePath)}`; // Store relative path for accessibility
+        }
+        if (req.files['ornnovaProfile']) {
+            const filePath = req.files['ornnovaProfile'][0].path;
+            candidateData.ornnovaProfile = `/uploads/${path.basename(filePath)}`; // Store relative path
+        }
+        if (req.files['candidateImage']) {
+            const filePath = req.files['candidateImage'][0].path;
+            candidateData.candidateImage = `/uploads/${path.basename(filePath)}`; // Store relative path
+        }
 
         // Check if a record with the same reqId and recruiterId exists
         let existingCandidate = await CandidateModel.findOne({ reqId, recruiterId });
@@ -1458,6 +1545,8 @@ app.post('/Candidates', uploadFields, async (req, res) => {
         res.status(500).json({ message: 'Failed to save candidate data' });
     }
 });
+
+
 
 app.get('/viewactions/:id/:userid', async (req, res) => {
     const { id, userid } = req.params;
