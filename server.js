@@ -1494,17 +1494,14 @@ const uploadFields = upload.fields([
     { name: 'candidateImage', maxCount: 1 }
 ]);
 
-// Candidate upload API
 app.post('/Candidates', uploadFields, async (req, res) => {
     try {
         const { reqId, recruiterId, candidate } = req.body;
 
-        // Validate input
         if (!candidate) {
             throw new Error('Candidate data is missing or invalid');
         }
 
-        // Parse the candidate JSON data
         let candidateData;
         try {
             candidateData = JSON.parse(candidate);
@@ -1512,29 +1509,25 @@ app.post('/Candidates', uploadFields, async (req, res) => {
             throw new Error('Failed to parse candidate data: ' + parseError.message);
         }
 
-        // Attach file paths if files are uploaded
         if (req.files['updatedResume']) {
             const filePath = req.files['updatedResume'][0].path;
-            candidateData.updatedResume = `/uploads/${path.basename(filePath)}`; // Store relative path for accessibility
+            candidateData.updatedResume = `/uploads/${path.basename(filePath)}`;
         }
         if (req.files['ornnovaProfile']) {
             const filePath = req.files['ornnovaProfile'][0].path;
-            candidateData.ornnovaProfile = `/uploads/${path.basename(filePath)}`; // Store relative path
+            candidateData.ornnovaProfile = `/uploads/${path.basename(filePath)}`;
         }
         if (req.files['candidateImage']) {
             const filePath = req.files['candidateImage'][0].path;
-            candidateData.candidateImage = `/uploads/${path.basename(filePath)}`; // Store relative path
+            candidateData.candidateImage = `/uploads/${path.basename(filePath)}`;
         }
 
-        // Check if a record with the same reqId and recruiterId exists
         let existingCandidate = await CandidateModel.findOne({ reqId, recruiterId });
 
         if (existingCandidate) {
-            // Add the new candidate to the existing candidates array
             existingCandidate.candidates.push(candidateData);
             await existingCandidate.save();
         } else {
-            // Create a new document with the candidate details
             const newCandidate = new CandidateModel({ reqId, recruiterId, candidates: [candidateData] });
             await newCandidate.save();
         }
