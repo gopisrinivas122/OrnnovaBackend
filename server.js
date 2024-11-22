@@ -1498,10 +1498,12 @@ app.post('/Candidates', uploadFields, async (req, res) => {
     try {
         const { reqId, recruiterId, candidate } = req.body;
 
+        // Check if candidate data is provided
         if (!candidate) {
             throw new Error('Candidate data is missing or invalid');
         }
 
+        // Parse candidate data
         let candidateData;
         try {
             candidateData = JSON.parse(candidate);
@@ -1509,6 +1511,7 @@ app.post('/Candidates', uploadFields, async (req, res) => {
             throw new Error('Failed to parse candidate data: ' + parseError.message);
         }
 
+        // Attach file paths if they exist and ensure proper formatting
         if (req.files['updatedResume']) {
             const filePath = req.files['updatedResume'][0].path;
             candidateData.updatedResume = `/uploads/${path.basename(filePath)}`;
@@ -1522,23 +1525,25 @@ app.post('/Candidates', uploadFields, async (req, res) => {
             candidateData.candidateImage = `/uploads/${path.basename(filePath)}`;
         }
 
+        // Check if a record with the same reqId and recruiterId exists
         let existingCandidate = await CandidateModel.findOne({ reqId, recruiterId });
 
         if (existingCandidate) {
+            // Add the new candidate to the existing candidates array
             existingCandidate.candidates.push(candidateData);
             await existingCandidate.save();
         } else {
+            // Create a new document with the candidate details
             const newCandidate = new CandidateModel({ reqId, recruiterId, candidates: [candidateData] });
             await newCandidate.save();
         }
 
-        res.status(200).json({ message: 'Candidate data saved successfully' });
+        res.status(200).json({ message: 'Candidate data saved successfully ✅' });
     } catch (error) {
         console.error('Error saving candidate data:', error);
         res.status(500).json({ message: 'Failed to save candidate data' });
     }
 });
-
 
 
 app.get('/viewactions/:id/:userid', async (req, res) => {
