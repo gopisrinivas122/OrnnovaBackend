@@ -36,7 +36,7 @@ const storage = multer.diskStorage({
 const upload = multer({
     storage: multer.diskStorage({
         destination: (req, file, cb) => {
-            cb(null, 'uploads/');
+            cb(null, '/var/uploads');
         },
         filename: (req, file, cb) => {
             cb(null, Date.now() + path.extname(file.originalname));
@@ -103,9 +103,8 @@ app.use(cors(corsOptions));  // Apply the CORS middleware
   
 app.use("/www", express.static("uploads"));
 
-// app.use('/uploads', express.static('uploads'));
-
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Serve files from the persistent storage mounted at /var/uploads
+app.use('/uploads', express.static('/var/uploads'));
 app.listen(process.env.PORT,()=>{
     console.log("Listening to Port 7993");
 });
