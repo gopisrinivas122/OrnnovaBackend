@@ -214,35 +214,66 @@ let ConnectedtoMDB= async()=>{
     res.json(loggedinuserdata);
  })
 
-app.post("/newUser",upload.array("ProfilePic"),async(req,res)=>{
+// app.post("/newUser",upload.array("ProfilePic"),async(req,res)=>{
 
-    let userArr=await NewUser.find().and({Email:req.body.Email});
-    if (userArr.length>0) {
-        res.json({status:"failure",msg:"Email already Exist❌"});
-    }else{
-    try{
-        let newUser = new NewUser({          
-            EmpCode:req.body.EmpCode,
-            EmployeeName:req.body.EmployeeName,
-            Email:req.body.Email,
-            Password:req.body.Password,
-            UserType:req.body.UserType,
-            ProfilePic:req.files[0].path,
-            Status:req.body.Status,
-            token:req.body.Token,
-            CreatedBy:req.body.CreatedBy,
-            Team:req.body.Team
+//     let userArr=await NewUser.find().and({Email:req.body.Email});
+//     if (userArr.length>0) {
+//         res.json({status:"failure",msg:"Email already Exist❌"});
+//     }else{
+//     try{
+//         let newUser = new NewUser({          
+//             EmpCode:req.body.EmpCode,
+//             EmployeeName:req.body.EmployeeName,
+//             Email:req.body.Email,
+//             Password:req.body.Password,
+//             UserType:req.body.UserType,
+//             ProfilePic:req.files[0].path,
+//             Status:req.body.Status,
+//             token:req.body.Token,
+//             CreatedBy:req.body.CreatedBy,
+//             Team:req.body.Team
 
-        });
-        await newUser.save();
-        res.json({status:"Success",msg:" User Created Successfully✅"});
-    }catch(error){
-        res.json({status:"Failed",error:error,msg:"Invalid Details ❌"});
-        console.log(error)
+//         });
+//         await newUser.save();
+//         res.json({status:"Success",msg:" User Created Successfully✅"});
+//     }catch(error){
+//         res.json({status:"Failed",error:error,msg:"Invalid Details ❌"});
+//         console.log(error)
+//     }
+//     }
+// }
+// );
+
+app.post("/newUser", upload.array("ProfilePic"), async (req, res) => {
+    let userArr = await NewUser.find({ Email: req.body.Email });
+    if (userArr.length > 0) {
+        res.json({ status: "failure", msg: "Email already Exist❌" });
+    } else {
+        try {
+            const profilePicPath = `/uploads/${path.basename(req.files[0].path)}`; // Normalize file path
+
+            let newUser = new NewUser({
+                EmpCode: req.body.EmpCode,
+                EmployeeName: req.body.EmployeeName,
+                Email: req.body.Email,
+                Password: req.body.Password,
+                UserType: req.body.UserType,
+                ProfilePic: profilePicPath, // Store relative path
+                Status: req.body.Status,
+                token: req.body.Token,
+                CreatedBy: req.body.CreatedBy,
+                Team: req.body.Team
+            });
+
+            await newUser.save();
+            res.json({ status: "Success", msg: "User Created Successfully✅" });
+        } catch (error) {
+            res.json({ status: "Failed", error: error, msg: "Invalid Details ❌" });
+            console.log(error);
+        }
     }
-    }
-}
-);
+});
+
 app.get("/userDetailsHome",async(req,res)=>{ 
     // to get only usertype having only user 
     // let userDetailshome=await NewUser.find({UserType:"User"});
