@@ -132,7 +132,8 @@ app.use(cors(corsOptions));  // Apply the CORS middleware
 // app.use("/www", express.static("uploads"));
 
 // Serve files from the persistent storage mounted at /var/uploads
-app.use('/uploads', express.static('/var/uploads'));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 app.listen(process.env.PORT,()=>{
     console.log("Listening to Port 7993");
 });
