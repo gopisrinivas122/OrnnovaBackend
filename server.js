@@ -54,31 +54,31 @@ const path = require('path');
 //     }
 // });
 
-// Multer storage configuration
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        // Save files to the persistent directory
-        cb(null, '/var/uploads');
+        // Save files to the persistent directory (ensure no trailing slash in the path)
+        const uploadDir = '/var/uploads'; // Update this to match your server setup
+        cb(null, uploadDir);
     },
     filename: (req, file, cb) => {
         // Save the file with a unique timestamped name
-        cb(null, Date.now() + path.extname(file.originalname));
+        const uniqueName = `${Date.now()}${path.extname(file.originalname)}`;
+        cb(null, uniqueName);
     }
 });
 
-// Multer upload configuration
 const upload = multer({
     storage,
     fileFilter: (req, file, cb) => {
         // Allowed file types
-        const filetypes = /jpeg|jpg|png|pdf/;
-        const mimetype = filetypes.test(file.mimetype);
-        const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
+        const allowedFileTypes = /jpeg|jpg|png|pdf/;
+        const mimetype = allowedFileTypes.test(file.mimetype);
+        const extname = allowedFileTypes.test(path.extname(file.originalname).toLowerCase());
 
         if (mimetype && extname) {
             return cb(null, true);
         }
-        cb(new Error('Invalid file type'));
+        cb(new Error('Invalid file type. Only JPEG, JPG, PNG, and PDF are allowed.'));
     }
 });
 
@@ -132,7 +132,8 @@ app.use(cors(corsOptions));  // Apply the CORS middleware
 // app.use("/www", express.static("uploads"));
 
 // Serve files from the persistent storage mounted at /var/uploads
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', express.static(path.join('/var/uploads')));
+
 
 app.listen(process.env.PORT,()=>{
     console.log("Listening to Port 7993");
@@ -1513,18 +1514,21 @@ app.post('/Candidates', uploadFields, async (req, res) => {
         }
 
         // Attach file paths if they exist and ensure proper formatting
-        if (req.files['updatedResume']) {
-            const filePath = req.files['updatedResume'][0].path;
-            candidateData.updatedResume = `/uploads/${path.basename(filePath)}`; // Ensure no extra slash
-        }
-        if (req.files['ornnovaProfile']) {
-            const filePath = req.files['ornnovaProfile'][0].path;
-            candidateData.ornnovaProfile = `/uploads/${path.basename(filePath)}`; // Ensure no extra slash
-        }
-        if (req.files['candidateImage']) {
-            const filePath = req.files['candidateImage'][0].path;
-            candidateData.candidateImage = `/uploads/${path.basename(filePath)}`; // Ensure no extra slash
-        }
+if (req.files['updatedResume'] && req.files['updatedResume'][0]) {
+    const filePath = req.files['updatedResume'][0].path;
+    candidateData.updatedResume = path.posix.join('/uploads', path.basename(filePath)); // Use path.posix to normalize slashes
+}
+
+if (req.files['ornnovaProfile'] && req.files['ornnovaProfile'][0]) {
+    const filePath = req.files['ornnovaProfile'][0].path;
+    candidateData.ornnovaProfile = path.posix.join('/uploads', path.basename(filePath)); // Use path.posix to normalize slashes
+}
+
+if (req.files['candidateImage'] && req.files['candidateImage'][0]) {
+    const filePath = req.files['candidateImage'][0].path;
+    candidateData.candidateImage = path.posix.join('/uploads', path.basename(filePath)); // Use path.posix to normalize slashes
+}
+
 
         // Check if a record with the same reqId and recruiterId exists
         let existingCandidate = await CandidateModel.findOne({ reqId, recruiterId });
