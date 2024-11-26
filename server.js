@@ -1963,7 +1963,8 @@ app.put('/candidates/:id', async (req, res) => {
 });
 // Assig Client to User
 app.post('/assignClient/:userId/:clientId', async (req, res) => {
-    const { userId,clientId} = req.params;
+    const { userId, clientId } = req.params;
+
     // Ensure clientId is in the correct format
     if (!mongoose.Types.ObjectId.isValid(clientId)) {
         return res.status(400).json({ status: 'error', msg: 'Invalid Client ID format.' });
@@ -1987,8 +1988,35 @@ app.post('/assignClient/:userId/:clientId', async (req, res) => {
 
         // Check if clientId is already in the Clients array
         if (!user.Clients.includes(clientId)) {
+            // Push the new clientId into the Clients array
             user.Clients.push(clientId);
             await user.save();
+
+            // Send email to the user
+            const transporter = nodemailer.createTransport({
+                service: 'gmail',  // You can use other email services as well
+                auth: {
+                    user: process.env.EMAIL,  // Your email address
+                    pass: process.env.PASSWORD,   // Your email password (or app-specific password)
+                },
+            });
+
+            const mailOptions = {
+                from: process.env.EMAIL,
+                to: user.Email,  // Assuming 'Email' is a field in your NewUser schema
+                subject: 'Client Assigned To You',
+                text: `Dear ${user.EmployeeName},\n\nA new client has been assigned to you.`,
+            };
+
+            transporter.sendMail(mailOptions, (error, info) => {
+                if (error) {
+                    console.error('Error sending email:', error);
+                    return res.status(500).json({ status: 'error', msg: 'Error sending email.' });
+                } else {
+                    console.log('Email sent: ' + info.response);
+                }
+            });
+
             res.json({ status: 'success', msg: 'Client assigned successfully ✅' });
         } else {
             res.json({ status: 'error', msg: 'Client already assigned to this user 😊' });
@@ -2125,6 +2153,31 @@ app.post('/assignReq/:userId/:requirementId', async (req, res) => {
             user.Requirements.push(requirementId);
             await user.save();  // Save the updated user document
 
+            // Send email to the user
+            const transporter = nodemailer.createTransport({
+                service: 'gmail',  // You can use other email services as well
+                auth: {
+                    user: process.env.EMAIL,  // Your email address
+                    pass: process.env.PASSWORD,   // Your email password (or app-specific password)
+                },
+            });
+
+            const mailOptions = {
+                from: process.env.EMAIL,
+                to: user.Email,  // Assuming 'Email' is a field in your NewUser schema
+                subject: 'Requirement Assigned To You',
+                text: `Dear ${user.EmployeeName},\n\nA new requirement has been successfully assigned to you.`,
+            };
+
+            transporter.sendMail(mailOptions, (error, info) => {
+                if (error) {
+                    console.error('Error sending email:', error);
+                    return res.status(500).json({ status: 'error', msg: 'Error sending email.' });
+                } else {
+                    console.log('Email sent: ' + info.response);
+                }
+            });
+
             res.json({ status: 'success', msg: 'Requirement assigned successfully ✅' });
         } else {
             res.json({ status: 'error', msg: 'Requirement already assigned to this user 😊' });
@@ -2134,7 +2187,6 @@ app.post('/assignReq/:userId/:requirementId', async (req, res) => {
         res.status(500).json({ status: 'error', msg: 'An error occurred while assigning the requirement.' });
     }
 });
-
 // Unassign Requirement from User
 
 app.post('/unassignReq/:userId/:requirementId', async (req, res) => {
