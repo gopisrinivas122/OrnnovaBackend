@@ -656,11 +656,39 @@ app.get("/getUserData/:id", async (req, res) => {
         res.status(500).json({ msg: "Internal Server Error" });
     }
 });
+app.get("/getUserdatatoUpdate/:id", async (req, res) => {
+    try {
+        // Step 1: Find the user by their ID
+        const user = await NewUser.findById(req.params.id);
 
- app.get("/getUserdatatoUpdate/:id",async(req,res)=>{
-    let userdetails = await NewUser.findById({_id:req.params.id});
-    res.json(userdetails); 
- }) 
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        // Step 2: Get the team member IDs from the user's Team field
+        const teamMemberIds = user.Team;
+
+        // Step 3: Fetch the details of the team members based on the IDs in the Team array
+        const teamMembers = await NewUser.find({
+            _id: { $in: teamMemberIds }
+        });
+
+        // Step 4: Respond with both user details and team members details
+        res.json({
+            user: user,
+            teamMembers: teamMembers
+        });
+    } catch (err) {
+        // Handle errors
+        console.error("Error:", err);
+        res.status(500).json({ message: "Internal Server Error" });
+    }
+});
+
+ // app.get("/getUserdatatoUpdate/:id",async(req,res)=>{
+ //    let userdetails = await NewUser.findById({_id:req.params.id});
+ //    res.json(userdetails); 
+ // }) 
 // Assuming you are using Express and Mongoose
 app.put('/updateUser/:id', async (req, res) => {
     const { id } = req.params;
