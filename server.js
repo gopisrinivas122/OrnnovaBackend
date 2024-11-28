@@ -409,29 +409,35 @@ app.get('/userDetailsofAssignedRequirement/:reqId/:userId', async (req, res) => 
     }
 });
 // Route to get users with UserType 'User'
-app.get("/getUserDataToADDtoTeam", async (req, res) => {
+app.get("/getUserDataToADDtoTeam/:id", async (req, res) => {
     try {
-        // Step 1: Get the list of all userIds that are in any Team array
-        const usersWithTeams = await NewUser.find({ "Team": { $exists: true, $ne: [] } }, "Team");
+        const userId = req.params.id; // Get the user ID from the params
 
-        // Extract all the userIds from the Team arrays
-        let userIdsInTeams = usersWithTeams.flatMap(user =>
-            user.Team
-                .filter(id => id) // Ensure id is defined
-                .map(id => id.toString())
+        // Step 1: Find the user by their ID and get their Team array
+        const user = await NewUser.findById(userId, "Team");
+        
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        // Step 2: Get all users with UserType 'User'
+        const allUsers = await NewUser.find({ UserType: "User" });
+
+        // Step 3: Find the users who are in the specified user's Team
+        const teamMembers = allUsers.filter(otherUser => 
+            user.Team && user.Team.includes(otherUser._id.toString())
         );
 
-        // Filter out any empty or invalid ObjectId strings
-        userIdsInTeams = userIdsInTeams.filter(id => id && mongoose.Types.ObjectId.isValid(id));
+        // Step 4: Find the users who are not in the specified user's Team
+        const nonTeamMembers = allUsers.filter(otherUser => 
+            user.Team && !user.Team.includes(otherUser._id.toString())
+        );
 
-        // Query to get users where UserType is 'User' and their _id is not in the Team array
-        const userDetails = await NewUser.find({
-            UserType: "User",
-            _id: { $nin: userIdsInTeams }
+        // Step 5: Respond with team members and non-team members
+        res.json({
+            teamMembers: teamMembers,
+            nonTeamMembers: nonTeamMembers
         });
-
-        // Respond with the filtered user details as JSON
-        res.json(userDetails);
     } catch (err) {
         // Handle errors (e.g., database issues)
         console.error("Error:", err);
