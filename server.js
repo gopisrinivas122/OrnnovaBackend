@@ -1683,14 +1683,32 @@ app.get('/adminviewactions/:id', async (req, res) => {
     }
 
     try {
+        // Log the received ID to check
+        console.log("Received ID:", id);
+
         // Find all documents with the given reqId
         const requirements = await CandidateModel.find({ reqId: id }).exec();
 
+        // Log the fetched requirements to check if data is returned
+        console.log("Requirements found:", requirements);
+
         if (requirements.length > 0) {
-            // Aggregate only candidates with savedStatus "Uploaded"
-            const allCandidates = requirements.flatMap(req => 
-                req.candidates.filter(candidate => candidate.savedStatus === 'Uploaded')
-            );
+            // Aggregate only candidates with savedStatus "Uploaded" and status not in rejected statuses
+            const allCandidates = requirements.flatMap(req => {
+                // Log candidates to inspect their structure
+                console.log("Candidates in requirement:", req.candidates);
+
+                return req.candidates.filter(candidate => 
+                    candidate.savedStatus === 'Uploaded' && 
+                    candidate.Status.every(statusObj => 
+                        !['Client Rejected', 'L1 Rejected', 'L2 Rejected', 'Rejected', 'Declined'].includes(statusObj.Status)
+                    )
+                );
+            });
+
+            // Log the filtered candidates to see if any match
+            console.log("Filtered candidates:", allCandidates);
+
             const candidateCount = allCandidates.length;
             res.json({ candidateCount, candidates: allCandidates });
         } else {
@@ -1700,6 +1718,7 @@ app.get('/adminviewactions/:id', async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch candidates', details: error });
     }
 });
+
 // To get Claimed Count
 app.get('/api/requirements/:id/claimedByCount', async (req, res) => {
     try {
