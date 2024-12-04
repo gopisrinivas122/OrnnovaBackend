@@ -2058,7 +2058,7 @@ app.post('/assignClient/:userId/:clientId', async (req, res) => {
                 from: process.env.EMAIL,
                 to: user.Email,  // Assuming 'Email' is a field in your NewUser schema
                 subject: 'Client Assigned To You',
-                text: `Dear ${user.EmployeeName},\n\nA new client has been assigned to you.`,
+                text: `Dear ${user.EmployeeName},\n\nA new client has been assigned to you.\n\n Check Here: https://ornnova.com/HR/`,
             };
 
             transporter.sendMail(mailOptions, (error, info) => {
@@ -2219,7 +2219,7 @@ app.post('/assignReq/:userId/:requirementId', async (req, res) => {
                 from: process.env.EMAIL,
                 to: user.Email,  // Assuming 'Email' is a field in your NewUser schema
                 subject: 'Requirement Assigned To You',
-                text: `Dear ${user.EmployeeName},\n\nA new requirement has been successfully assigned to you.`,
+                text: `Dear ${user.EmployeeName},\n\nA new requirement has been successfully assigned to you.\n\n Check Here: https://ornnova.com/HR/`,
             };
 
             transporter.sendMail(mailOptions, (error, info) => {
