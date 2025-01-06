@@ -111,6 +111,7 @@ const allowedOrigins = [
   'https://frontend-fge2.vercel.app', 
   'https://frontend-theta-mocha-38.vercel.app',
  'https://hr.ornnova.com',
+    'https://ornnova.com',
 ];
 
 const corsOptions = {
