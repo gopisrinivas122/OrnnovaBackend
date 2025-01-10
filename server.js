@@ -859,6 +859,8 @@ app.get("/ClientsList", async (req, res) => {
             // Find users for the current client and filter by userType
             const users = await NewUser.find({
                 Clients: client._id,
+                Status:"Active"
+
             });
 
             const userCount = users.length;
