@@ -289,7 +289,9 @@ app.get('/userDetailstoAssignClient/:clientId', async (req, res) => {
         // Find users who do not have the specified client ID in their Clients array
         const userDetails = await NewUser.find({
             UserType: { $in: ["User", "TeamLead"] },
-            Clients: { $ne: clientId }  // $ne operator excludes users with the clientId in Clients array
+            Clients: { $ne: clientId } , // $ne operator excludes users with the clientId in Clients array
+                        Status:{$in:["Active"]}
+
         });
 
         // Get the count of users
@@ -332,7 +334,9 @@ app.get('/userDetailsofAssignedClient/:clientId', async (req, res) => {
         // Find users who do not have the specified client ID in their Clients array
         const userDetails = await NewUser.find({
             UserType: { $in: ["User", "TeamLead"] },
-            Clients: { $in: clientId }  // $ne operator excludes users with the clientId in Clients array
+            Clients: { $in: clientId },  // $ne operator excludes users with the clientId in Clients array
+                        Status:{$in:["Active"]}
+
         });
  // Get the count of users
  const count = userDetails.length;
@@ -367,7 +371,9 @@ app.get('/userDetailstoAssignRequirement/:reqId/:userId', async (req, res) => {
         const teamMembers = await NewUser.find({
             _id: { $in: teamIds }, // Filter users whose IDs are in the Team array
             UserType: { $in: ["User"] }, // Ensure UserType is "User"
-            Requirements: { $ne: reqId }  // Exclude users who already have this reqId in their Requirements array
+            Requirements: { $ne: reqId },  // Exclude users who already have this reqId in their Requirements array
+                        Status:{$in:["Active"]}
+
         });
 
         // Find the requirement details using the reqId from the NewRequirement schema
@@ -401,7 +407,9 @@ app.get('/userDetailsofAssignedRequirement/:reqId/:userId', async (req, res) => 
         const userDetails = await NewUser.find({
             UserType: { $in: ["User"] },
             Requirements: reqId, // Users with the specified reqId
-            _id: { $in: teamIds } // Users present in the Team
+            _id: { $in: teamIds } ,// Users present in the Team
+                        Status:{$in:["Active"]}
+
         });
 
         res.json(userDetails);
