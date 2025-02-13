@@ -21,7 +21,6 @@ const transporter = nodemailer.createTransport({
         pass:process.env.PASSWORD
     }
 })
-
 const path = require('path');
 
 // const storage = multer.diskStorage({
