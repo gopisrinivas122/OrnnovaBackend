@@ -25,7 +25,7 @@ const sendPasswordResetEmail = (user, resetUrl) => {
     to: user.Email,
     subject: 'Reset Your ORNNOVA HR Password',
     text: `Dear ${user.EmployeeName},\n\nWe received a request to reset your password.\n\nReset your password using this link (valid for 1 hour):\n${resetUrl}\n\nIf you did not request this, you can ignore this email.`,
-  });
+  }, { throwOnError: true });
 };
 
 module.exports = { sendClientAssignedEmail, sendRequirementAssignedEmail, sendPasswordResetEmail };

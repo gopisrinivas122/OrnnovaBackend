@@ -101,13 +101,30 @@ const sendPasswordResetLink = async (email, frontendBaseUrl) => {
   const user = await NewUser.findOne({ Email: email.trim() });
 
   if (user) {
+    const previousToken = user.token;
+    const previousVerifyToken = user.verifytoken;
     const resetToken = crypto.randomBytes(32).toString('hex');
     user.token = resetToken;
     user.verifytoken = new Date(Date.now() + RESET_TOKEN_EXPIRY_MS).toISOString();
     await user.save();
 
     const resetUrl = `${frontendBaseUrl.replace(/\/$/, '')}/ResetPassword/${user._id}/${resetToken}`;
-    await sendPasswordResetEmail(user, resetUrl);
+    try {
+      await sendPasswordResetEmail(user, resetUrl);
+    } catch (emailError) {
+      user.token = previousToken;
+      user.verifytoken = previousVerifyToken;
+      await user.save();
+      return {
+        error: {
+          status: 502,
+          body: {
+            status: 'Failed',
+            msg: 'Unable to send reset email. Check EMAIL/PASSWORD in server settings (use a Gmail App Password).',
+          },
+        },
+      };
+    }
   }
 
   return {
@@ -203,11 +220,80 @@ const changePassword = async (id, token, newPassword) => {
   };
 };
 
+const changePasswordForLoggedInUser = async (userId, currentPassword, newPassword) => {
+  if (!currentPassword || !newPassword) {
+    return {
+      error: {
+        status: 400,
+        body: { status: 'Failed', msg: 'Current password and new password are required.' },
+      },
+    };
+  }
+
+  if (newPassword.length < 6) {
+    return {
+      error: {
+        status: 400,
+        body: { status: 'Failed', msg: 'New password must be at least 6 characters long.' },
+      },
+    };
+  }
+
+  if (currentPassword === newPassword) {
+    return {
+      error: {
+        status: 400,
+        body: { status: 'Failed', msg: 'New password must be different from the current password.' },
+      },
+    };
+  }
+
+  const user = await NewUser.findById(userId);
+  if (!user) {
+    return {
+      error: {
+        status: 404,
+        body: { status: 'Failed', msg: 'User not found.' },
+      },
+    };
+  }
+
+  if (user.Status === 'InActive') {
+    return {
+      error: {
+        status: 403,
+        body: { status: 'Failed', msg: 'This account is inactive.' },
+      },
+    };
+  }
+
+  const currentMatches = await comparePassword(currentPassword, user.Password);
+  if (!currentMatches) {
+    return {
+      error: {
+        status: 401,
+        body: { status: 'Failed', msg: 'Current password is incorrect.' },
+      },
+    };
+  }
+
+  user.Password = await hashPassword(newPassword);
+  await user.save();
+
+  return {
+    data: {
+      status: 'Success',
+      msg: 'Password changed successfully.',
+    },
+  };
+};
+
 module.exports = {
   login,
   getLoggedInUserData,
   sendPasswordResetLink,
   validateResetToken,
   changePassword,
+  changePasswordForLoggedInUser,
   buildUserSession,
 };

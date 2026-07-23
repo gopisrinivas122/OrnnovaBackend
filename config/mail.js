@@ -10,12 +10,17 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-const sendEmailSafely = async (mailOptions) => {
+const sendEmailSafely = async (mailOptions, { throwOnError = false } = {}) => {
   try {
     await transporter.sendMail(mailOptions);
     logger.info('Email sent successfully to:', mailOptions.to);
+    return true;
   } catch (emailError) {
-    logger.error('Email sending failed (non-blocking):', emailError.message);
+    logger.error('Email sending failed:', emailError.message);
+    if (throwOnError) {
+      throw emailError;
+    }
+    return false;
   }
 };
 

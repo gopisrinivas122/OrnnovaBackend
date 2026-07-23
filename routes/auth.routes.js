@@ -9,5 +9,6 @@ router.post('/login', upload.none(), authController.login);
 router.post('/sendpasswordlink', upload.none(), authController.sendPasswordLink);
 router.get('/ResetPasswordpage/:id/:token', authController.validateResetPasswordPage);
 router.post('/Changepassword/:id/:token', upload.none(), authController.changePassword);
+router.post('/account/change-password', upload.none(), authController.changePasswordLoggedIn);
 
 module.exports = router;

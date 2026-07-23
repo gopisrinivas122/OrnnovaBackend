@@ -38,3 +38,14 @@ exports.changePassword = async (req, res) => {
   if (result.error) return sendError(res, result.error);
   return res.json(result.data);
 };
+
+exports.changePasswordLoggedIn = async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  const result = await authService.changePasswordForLoggedInUser(
+    req.user.id,
+    currentPassword,
+    newPassword
+  );
+  if (result.error) return sendError(res, result.error);
+  return res.json(result.data);
+};
