@@ -12,7 +12,8 @@
     "xlsx": "^0.18.5"
   },
   "scripts": {
-    "start": "nodemon server.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
   "name": "hrmanagment",
   "version": "1.0.0",
