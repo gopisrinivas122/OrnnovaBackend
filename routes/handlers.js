@@ -36,6 +36,18 @@ const { importRequirements } = require('../services/requirementImport.service');
 const { importClients } = require('../services/clientImport.service');
 const { hashPassword } = require('../utils/password');
 const { activeUserFilter, INACTIVE_STATUS, isActiveUser } = require('../utils/userStatus');
+const {
+  claimRequirement,
+  unclaimRequirement,
+  validateUploadAllowed,
+  syncRequirementCandidateCount,
+  enrichRequirementWorkflow,
+  enrichRequirementsWorkflow,
+  canUserEditRequirement,
+  canUserViewRequirement,
+  getCreatedBy,
+} = require('../services/requirementWorkflow.service');
+const { canTeamLeadManageRequirement } = require('../utils/requirementVisibility');
 
 module.exports = (app) => {
  app.get("/loggedinuserdata/:email", asyncHandler(async (req, res) => {
@@ -635,6 +647,8 @@ const formattedAssessments = Array.isArray(assessments) ? assessments.map(item =
           requirementtype: normalizeRequirementType(req.body.requirmentType),
           update:req.body.update,
           uploadedBy:req.body.uploadedBy,
+          createdBy: req.body.uploadedBy || req.user?.id || '',
+          claimStatus: 'Assigned',
           clientId: req.body.clientId ? String(req.body.clientId) : '',
           numberOfPositions: req.body.numberOfPositions || 1,
           workMode: req.body.workMode || '',
@@ -758,7 +772,8 @@ app.get('/getrequirements', async (req, res) => {
             requirements = await getRequirementsForUser(user, { lean: true });
         }
 
-        res.json(requirements);
+        const enriched = await enrichRequirementsWorkflow(requirements, user);
+        res.json(enriched);
     } catch (err) {
         res.status(500).json({ status: "Error", msg: err.message });
     }
@@ -767,18 +782,26 @@ app.get('/getrequirements', async (req, res) => {
 app.get('/getrequirements/:id', async (req, res) => {
     const Id = req.params.id;    
     try {
-        // Fetch requirement by ID
         const requirement = await NewRequirment.findById(Id);
 
-        // Check if the requirement exists
         if (!requirement) {
             return res.status(404).json({ status: "Error", msg: "Requirement not found" });
         }
 
-        // Return the fetched requirement
+        const actorId = req.user?.id || req.query.userId;
+        if (actorId) {
+            const user = await NewUser.findById(actorId);
+            if (user && !(await canUserViewRequirement(user, requirement))) {
+                return res.status(403).json({ status: "Error", msg: "You do not have access to this requirement." });
+            }
+            if (user) {
+                const enriched = await enrichRequirementWorkflow(requirement, user);
+                return res.status(200).json(enriched);
+            }
+        }
+
         res.status(200).json(requirement);
     } catch (err) {
-        // Handle any errors
         console.error(err.message);
         res.status(500).json({ status: "Error", msg: "Server Error" });
     }
@@ -786,43 +809,29 @@ app.get('/getrequirements/:id', async (req, res) => {
 
 app.put('/claim/:id', async (req, res) => {
     const { id } = req.params;
-    const { userId, claimedDate } = req.body;
-  
-    if (!userId || !claimedDate) {
-      return res.status(400).json({ status: "Fail", msg: "Missing required fields." });
-    }
-  
+    const { userId } = req.body;
+
     try {
-      // Check if the requirement exists
-      const requirement = await NewRequirment.findById(id);
-      if (!requirement) {
-        return res.status(404).json({ status: "Fail", msg: "Requirement not found." });
-      }
-  
-      // Add user to the claimedBy array
-      const result = await NewRequirment.findByIdAndUpdate(
-        id,
-        {
-          $addToSet: {
-            claimedBy: {
-              userId: userId,
-              claimedDate: new Date(claimedDate),
-            }
-          }
-        },
-        { new: true }
-      );
-  
-      if (result) {
-        res.json({ status: "Success", msg: "Requirement claimed successfully ✅" });
-      } else {
-        res.status(500).json({ status: "Fail", msg: "Failed to update requirement." });
-      }
+      const result = await claimRequirement(id, req, userId);
+      return res.status(result.statusCode).json(result.payload);
     } catch (err) {
       console.error('Server error:', err);
       res.status(500).json({ status: "Fail", msg: "Server error." });
     }
   });
+
+app.put('/unclaim/:id', async (req, res) => {
+    const { id } = req.params;
+    const { userId } = req.body;
+
+    try {
+      const result = await unclaimRequirement(id, req, userId);
+      return res.status(result.statusCode).json(result.payload);
+    } catch (err) {
+      console.error('Server error:', err);
+      res.status(500).json({ status: 'Fail', msg: 'Server error.' });
+    }
+});
    
 app.get("/actions/:id/:userid", async (req, res) => {
     try {
@@ -919,12 +928,15 @@ app.post('/Candidates', uploadFields, async (req, res) => {
     try {
         const { reqId, recruiterId, candidate } = req.body;
 
-        // Check if candidate data is provided
         if (!candidate) {
             throw new Error('Candidate data is missing or invalid');
         }
 
-        // Parse candidate data
+        const uploadCheck = await validateUploadAllowed(reqId, req, recruiterId);
+        if (!uploadCheck.allowed) {
+            return res.status(uploadCheck.statusCode).json({ message: uploadCheck.message });
+        }
+
         let candidateData;
         try {
             candidateData = JSON.parse(candidate);
@@ -976,6 +988,8 @@ if (req.files['candidateImage'] && req.files['candidateImage'][0]) {
             const newCandidate = new CandidateModel({ reqId, recruiterId, candidates: [candidateData] });
             await newCandidate.save();
         }
+
+        await syncRequirementCandidateCount(reqId);
 
         res.status(200).json({ message: 'Candidate data saved successfully' });
     } catch (error) {
@@ -1596,19 +1610,27 @@ app.post('/assignReq/:userId/:requirementId', async (req, res) => {
 
         const requirement = await NewRequirment.findById(requirementId);
         if (requirement) {
-            const userIdStr = userId.toString();
-            const alreadyClaimed = (requirement.claimedBy || []).some(
-                (claim) => claim.userId === userIdStr
-            );
+            const assigner = req.user?.id ? await NewUser.findById(req.user.id) : null;
 
-            if (!alreadyClaimed) {
-                requirement.claimedBy.push({
-                    userId: userIdStr,
-                    claimedDate: new Date(),
-                });
+            if (assigner?.UserType === 'TeamLead') {
+                if (getCreatedBy(requirement) !== assigner._id.toString()) {
+                    user.Requirements = user.Requirements.filter((id) => id.toString() !== requirementId.toString());
+                    await user.save();
+                    return res.status(403).json({ status: 'error', msg: 'Team Lead can assign only their own requirements.' });
+                }
+                const teamIds = (assigner.Team || []).map((id) => id.toString());
+                if (!teamIds.includes(userId.toString()) && user.UserType !== 'TeamLead') {
+                    user.Requirements = user.Requirements.filter((id) => id.toString() !== requirementId.toString());
+                    await user.save();
+                    return res.status(403).json({ status: 'error', msg: 'Team Lead can assign only to recruiters in their team.' });
+                }
             }
 
+            requirement.assignedBy = assigner?._id?.toString() || requirement.assignedBy || '';
             requirement.update = 'Old';
+            if (!requirement.createdBy) {
+                requirement.createdBy = getCreatedBy(requirement);
+            }
             await requirement.save();
         }
 
@@ -2010,8 +2032,10 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
                 const combinedTodayCandidates = [...todayUserCandidates, ...todayTeamCandidates];
 
                 // Step 9: Return the details
+                const enrichedRequirement = await enrichRequirementWorkflow(requirement, user);
+
                 return {
-                    requirementDetails: requirement,
+                    requirementDetails: enrichedRequirement,
                     requirementSource: requirement.requirementSource || 'Assigned',
                     userCount: userCountForThisRequirement,
                     assignedUsernames: usernamesForThisRequirement,
@@ -2039,24 +2063,27 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
 
 
 app.delete('/deleteRequirement/:regId', async (req, res) => {
-    const regId = req.params.regId; // Get the regId from the request parameters
+    const regId = req.params.regId;
 
     try {
-        // Step 1: Find and delete the requirement by regId
-        const deletedRequirement = await NewRequirment.findOneAndDelete({ _id: regId });
-
-        if (!deletedRequirement) {
+        const requirement = await NewRequirment.findById(regId);
+        if (!requirement) {
             return res.status(404).json({ message: "Requirement not found" });
         }
 
-        // Step 2: Find and delete the candidates assigned to this requirement
+        const actorId = req.user?.id || req.query.userId;
+        const actor = actorId ? await NewUser.findById(actorId) : null;
+        if (!actor || !(await canUserEditRequirement(actor, requirement))) {
+            return res.status(403).json({ message: 'You do not have permission to delete this requirement.' });
+        }
+
+        const deletedRequirement = await NewRequirment.findOneAndDelete({ _id: regId });
         const deletedCandidates = await CandidateModel.deleteMany({ reqId: regId });
 
-        // Step 3: Return success message with details
         res.status(200).json({
             message: "Requirement and associated candidates deleted successfully",
             deletedRequirement,
-            deletedCandidates: deletedCandidates.deletedCount // Number of deleted candidates
+            deletedCandidates: deletedCandidates.deletedCount
         });
     } catch (error) {
         console.error("Error deleting requirement and candidates:", error);
@@ -2066,22 +2093,31 @@ app.delete('/deleteRequirement/:regId', async (req, res) => {
 
 // PUT endpoint to update a requirement
 app.put('/editRequirement/:id', async (req, res) => {
-    const { id } = req.params; // Extract the requirement ID from the URL
-    const updateData = req.body; // Get the data to update from the request body
-    // console.log(id)
-    try {
-        // Find the requirement by ID and update it
-        const updatedRequirement = await NewRequirment.findByIdAndUpdate(id, updateData, {
-            new: true, // Return the updated document
-            runValidators: true // Run schema validation
-        });
+    const { id } = req.params;
+    const updateData = { ...req.body };
+    delete updateData.id;
+    delete updateData._id;
+    delete updateData.workflow;
+    delete updateData.currentClaimedBy;
+    delete updateData.claimedBy;
 
-        // Check if requirement was found and updated
-        if (!updatedRequirement) {
+    try {
+        const requirement = await NewRequirment.findById(id);
+        if (!requirement) {
             return res.status(404).json({ message: 'Requirement not found' });
         }
 
-        // Respond with the updated requirement
+        const actorId = req.user?.id || updateData.uploadedBy;
+        const actor = actorId ? await NewUser.findById(actorId) : null;
+        if (!actor || !(await canUserEditRequirement(actor, requirement))) {
+            return res.status(403).json({ message: 'You do not have permission to edit this requirement.' });
+        }
+
+        const updatedRequirement = await NewRequirment.findByIdAndUpdate(id, updateData, {
+            new: true,
+            runValidators: true,
+        });
+
         res.status(200).json(updatedRequirement);
     } catch (error) {
         console.error('Error updating requirement:', error);
@@ -2200,6 +2236,7 @@ app.get('/admingetrequirements', async (req, res) => {
                 uploadedCandidates,
                 noactionCandidates,
                 noactionCandidatesCount: noactionCandidates.length,
+                claimStatus: requirement.claimStatus || ((requirement.claimedBy || []).length ? 'Claimed' : 'Assigned'),
             };
         });
 

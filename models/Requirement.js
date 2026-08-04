@@ -28,14 +28,25 @@ const RequirementSchema = new mongoose.Schema({
     },
   ],
   uploadedBy: { type: String },
+  createdBy: { type: String, default: '' },
+  assignedBy: { type: String, default: '' },
   clientId: { type: String },
   update: { type: String, default: 'New' },
   uploadedDate: { type: Date, default: Date.now },
+  claimStatus: { type: String, enum: ['Assigned', 'Claimed'], default: 'Assigned' },
+  currentClaimedBy: {
+    userId: { type: String, default: '' },
+    claimedDate: { type: Date },
+  },
+  candidateCount: { type: Number, default: 0 },
   claimedBy: [{ userId: String, claimedDate: Date }],
 });
 
 RequirementSchema.index({ clientId: 1 });
 RequirementSchema.index({ regId: 1 });
+RequirementSchema.index({ createdBy: 1 });
+RequirementSchema.index({ claimStatus: 1 });
+RequirementSchema.index({ 'currentClaimedBy.userId': 1 });
 
 const NewRequirment = mongoose.model('Requirements', RequirementSchema);
 

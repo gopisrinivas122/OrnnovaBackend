@@ -108,32 +108,11 @@ async function getRequirementsForTeamLead(user, { lean = false, withSource = fal
   if (!user) return [];
 
   const userId = user._id.toString();
-  const { clientIdStrings, clientNames } = await getTeamLeadClientContext(user);
-  const directRequirementIds = (user.Requirements || []).map((id) => id.toString());
+  const assignedIds = (user.Requirements || []).map((id) => id.toString()).filter(Boolean);
 
-  const teamUsers = await NewUser.find({ _id: { $in: user.Team || [] }, ...activeUserFilter })
-    .select('Requirements')
-    .lean();
-  const teamRequirementIds = teamUsers.flatMap((member) =>
-    (member.Requirements || []).map((id) => id.toString())
-  );
-
-  const linkedRequirementIds = [...new Set([...directRequirementIds, ...teamRequirementIds])];
-  const adminUploaderIds = await getAdminUploaderIds();
   const orConditions = [{ uploadedBy: userId }];
-
-  if (adminUploaderIds.length) {
-    orConditions.push({ uploadedBy: { $in: adminUploaderIds } });
-  }
-
-  if (clientIdStrings.length) {
-    orConditions.push({ clientId: { $in: clientIdStrings } });
-  }
-  if (clientNames.length) {
-    orConditions.push({ client: { $in: clientNames } });
-  }
-  if (linkedRequirementIds.length) {
-    orConditions.push({ _id: { $in: linkedRequirementIds } });
+  if (assignedIds.length) {
+    orConditions.push({ _id: { $in: assignedIds } });
   }
 
   const query = NewRequirment.find({ $or: orConditions });
@@ -146,17 +125,20 @@ async function getRequirementsForTeamLead(user, { lean = false, withSource = fal
   const uploaderTypeMap = await buildUploaderTypeMap(unique);
   const sourceContext = {
     userId,
-    clientIdStrings,
-    clientNames,
-    directRequirementIds: linkedRequirementIds,
+    clientIdStrings: [],
+    clientNames: [],
+    directRequirementIds: assignedIds,
     uploaderTypeMap,
   };
 
   return unique.map((requirement) => {
     const plainRequirement = requirement?.toObject ? requirement.toObject() : { ...requirement };
+    const source = classifyRequirementSource(plainRequirement, sourceContext);
     return {
       ...plainRequirement,
-      requirementSource: classifyRequirementSource(plainRequirement, sourceContext),
+      requirementSource: plainRequirement.uploadedBy === userId
+        ? SOURCE_LABELS.TL_CREATED
+        : source,
     };
   });
 }
@@ -192,15 +174,10 @@ async function linkRequirementToMatchingTeamLeads(requirement) {
 async function getRequirementsForUser(user, { lean = true } = {}) {
   if (!user) return [];
 
-  const userId = user._id.toString();
   const assignedIds = (user.Requirements || []).map((id) => id.toString()).filter(Boolean);
+  if (!assignedIds.length) return [];
 
-  const orConditions = [{ 'claimedBy.userId': userId }];
-  if (assignedIds.length) {
-    orConditions.push({ _id: { $in: assignedIds } });
-  }
-
-  const query = NewRequirment.find({ $or: orConditions });
+  const query = NewRequirment.find({ _id: { $in: assignedIds } });
   if (lean) query.lean();
   return query.exec();
 }
@@ -211,14 +188,14 @@ async function userCanAccessRequirement(user, requirement) {
   const userId = user._id.toString();
   const requirementId = requirement._id.toString();
 
-  if (user.UserType === 'TeamLead' || user.UserType === 'Admin') {
-    return true;
+  if (user.UserType === 'Admin') return true;
+
+  if (user.UserType === 'TeamLead') {
+    return String(requirement.uploadedBy || requirement.createdBy || '') === userId
+      || (user.Requirements || []).some((id) => id.toString() === requirementId);
   }
 
-  const isAssigned = (user.Requirements || []).some((id) => id.toString() === requirementId);
-  const hasClaimed = (requirement.claimedBy || []).some((claim) => claim.userId === userId);
-
-  return isAssigned || hasClaimed;
+  return (user.Requirements || []).some((id) => id.toString() === requirementId);
 }
 
 module.exports = {

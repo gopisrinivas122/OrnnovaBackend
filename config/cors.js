@@ -6,6 +6,7 @@ const allowedOrigins = [
   'https://frontend-theta-mocha-38.vercel.app',
   'https://hr.ornnova.com',
   'https://ornnova.com',
+  'https://168.144.218.77',
 ];
 
 const corsOptions = {
