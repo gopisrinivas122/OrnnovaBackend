@@ -1,8 +1,14 @@
+const fs = require('fs');
 const multer = require('multer');
 const path = require('path');
 const { UPLOAD_DIR } = require('./env');
 
 const uploadDir = UPLOAD_DIR || path.join(__dirname, '..', 'uploads');
+const jdUploadDir = path.join(uploadDir, 'jd');
+
+const ensureJdUploadDir = () => {
+  fs.mkdirSync(jdUploadDir, { recursive: true });
+};
 
 const storage = multer.diskStorage({
   destination(req, file, cb) {
@@ -34,4 +40,35 @@ const uploadFields = upload.fields([
   { name: 'candidateImage', maxCount: 1 },
 ]);
 
-module.exports = { upload, uploadFields, uploadDir };
+const jdStorage = multer.diskStorage({
+  destination(req, file, cb) {
+    ensureJdUploadDir();
+    cb(null, jdUploadDir);
+  },
+  filename(req, file, cb) {
+    const uniqueName = `jd-${Date.now()}${path.extname(file.originalname).toLowerCase()}`;
+    cb(null, uniqueName);
+  },
+});
+
+const jdPdfUpload = multer({
+  storage: jdStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter(req, file, cb) {
+    const isPdf = file.mimetype === 'application/pdf'
+      && path.extname(file.originalname).toLowerCase() === '.pdf';
+
+    if (isPdf) {
+      return cb(null, true);
+    }
+    cb(new Error('JD must be a PDF file (maximum 5 MB).'));
+  },
+});
+
+module.exports = {
+  upload,
+  uploadFields,
+  jdPdfUpload,
+  uploadDir,
+  jdUploadDir,
+};

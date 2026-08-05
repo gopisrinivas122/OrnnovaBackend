@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const mongoose = require('mongoose');
 const NewUser = require('../models/User');
 const NewClient = require('../models/Client');
@@ -6,7 +7,7 @@ const NewRequirment = require('../models/Requirement');
 const CandidateModel = require('../models/Candidate');
 const asyncHandler = require('../middleware/asyncHandler');
 const { validateObjectId, isValidObjectId } = require('../middleware/validateObjectId');
-const { upload, uploadFields } = require('../config/multer');
+const { upload, uploadFields, jdPdfUpload } = require('../config/multer');
 const { sendEmailSafely } = require('../config/mail');
 const { getAdminAnalytics, computeRequirementFunnel, flattenUploadedCandidates } = require('../services/adminAnalytics.service');
 const { checkDuplicateCandidate } = require('../services/candidateDuplicate.service');
@@ -48,6 +49,12 @@ const {
   getCreatedBy,
 } = require('../services/requirementWorkflow.service');
 const { canTeamLeadManageRequirement } = require('../utils/requirementVisibility');
+const { validateAssessments } = require('../utils/requirementAssessments');
+const {
+  buildJdPublicPath,
+  resolveJdAbsolutePath,
+  deleteJdFileIfExists,
+} = require('../utils/requirementJd');
 
 module.exports = (app) => {
  app.get("/loggedinuserdata/:email", asyncHandler(async (req, res) => {
@@ -616,20 +623,17 @@ app.put("/UpdateClient/:id", async(req,res)=>{
       }
 })
 
-app.post("/newRequirment",upload.none(),async(req,res)=>{ 
-    // let RegID=await NewRequirment.find().and({reqId:req.body.reqId});
-    // if (RegID.length>0) {
-    //     res.json({status:"failure",msg:"Reg ID already Exist❌"});
-    // }else{
+app.post("/newRequirment", jdPdfUpload.single('jdPdf'), async(req,res)=>{ 
     try{
-          const{
-            assessments
-          } = req.body;
-        // Ensure assessments is an array of objects
-const formattedAssessments = Array.isArray(assessments) ? assessments.map(item => ({
-    assessment: item.assessment || "",
-    yoe: item.yoe || ""
-  })) : [];
+        if (!req.file) {
+          return res.json({ status: 'Failed', msg: 'JD PDF is required (maximum 5 MB).' });
+        }
+
+        const assessmentValidation = validateAssessments(req.body.assessments);
+        if (!assessmentValidation.ok) {
+          deleteJdFileIfExists(buildJdPublicPath(req.file));
+          return res.json({ status: 'Failed', msg: assessmentValidation.message });
+        }
 
         let newRequirment = new NewRequirment({
           regId:req.body.regId,
@@ -644,7 +648,7 @@ const formattedAssessments = Array.isArray(assessments) ? assessments.map(item =
           relevantExperience:req.body.relevantExperience,
           skill:req.body.skill,
           role:req.body.role,
-          requirementtype: normalizeRequirementType(req.body.requirmentType),
+          requirementtype: normalizeRequirementType(req.body.requirmentType || req.body.requirementtype),
           update:req.body.update,
           uploadedBy:req.body.uploadedBy,
           createdBy: req.body.uploadedBy || req.user?.id || '',
@@ -657,21 +661,24 @@ const formattedAssessments = Array.isArray(assessments) ? assessments.map(item =
           expectedOnboardDate: req.body.expectedOnboardDate || undefined,
           interviewProcess: req.body.interviewProcess || '',
           remarks: req.body.remarks || '',
-        assessments:formattedAssessments
+          assessments: assessmentValidation.assessments,
+          jdPdf: buildJdPublicPath(req.file),
+          jdPdfOriginalName: req.file.originalname,
         });
         await newRequirment.save();
         if (req.body.uploadedBy) {
           await attachRequirementToTeamLead(req.body.uploadedBy, newRequirment._id);
         }
         await linkRequirementToMatchingTeamLeads(newRequirment);
-        // console.log(req.body);
         res.json({status:"Success",msg:" Requirment Added Successfully✅"});
     }catch(error){
-        res.json({status:"Failed",error:error,msg:"Invalid Details ❌"});
+        if (req.file) {
+          deleteJdFileIfExists(buildJdPublicPath(req.file));
+        }
+        res.json({status:"Failed",error:error,msg: error.message || "Invalid Details ❌"});
         console.log(error);       
     }
-    }
-);
+});
 
 app.get('/getrequirements', async (req, res) => {
     try {
@@ -2092,7 +2099,7 @@ app.delete('/deleteRequirement/:regId', async (req, res) => {
 });
 
 // PUT endpoint to update a requirement
-app.put('/editRequirement/:id', async (req, res) => {
+app.put('/editRequirement/:id', jdPdfUpload.single('jdPdf'), async (req, res) => {
     const { id } = req.params;
     const updateData = { ...req.body };
     delete updateData.id;
@@ -2100,17 +2107,36 @@ app.put('/editRequirement/:id', async (req, res) => {
     delete updateData.workflow;
     delete updateData.currentClaimedBy;
     delete updateData.claimedBy;
+    delete updateData.jdPdf;
+    delete updateData.jdPdfOriginalName;
 
     try {
         const requirement = await NewRequirment.findById(id);
         if (!requirement) {
+            if (req.file) deleteJdFileIfExists(buildJdPublicPath(req.file));
             return res.status(404).json({ message: 'Requirement not found' });
         }
 
         const actorId = req.user?.id || updateData.uploadedBy;
         const actor = actorId ? await NewUser.findById(actorId) : null;
         if (!actor || !(await canUserEditRequirement(actor, requirement))) {
+            if (req.file) deleteJdFileIfExists(buildJdPublicPath(req.file));
             return res.status(403).json({ message: 'You do not have permission to edit this requirement.' });
+        }
+
+        const assessmentValidation = validateAssessments(updateData.assessments);
+        if (!assessmentValidation.ok) {
+            if (req.file) deleteJdFileIfExists(buildJdPublicPath(req.file));
+            return res.status(400).json({ message: assessmentValidation.message });
+        }
+        updateData.assessments = assessmentValidation.assessments;
+
+        if (req.file) {
+            deleteJdFileIfExists(requirement.jdPdf);
+            updateData.jdPdf = buildJdPublicPath(req.file);
+            updateData.jdPdfOriginalName = req.file.originalname;
+        } else if (!requirement.jdPdf) {
+            return res.status(400).json({ message: 'JD PDF is required. Please upload a PDF (maximum 5 MB).' });
         }
 
         const updatedRequirement = await NewRequirment.findByIdAndUpdate(id, updateData, {
@@ -2120,8 +2146,40 @@ app.put('/editRequirement/:id', async (req, res) => {
 
         res.status(200).json(updatedRequirement);
     } catch (error) {
+        if (req.file) deleteJdFileIfExists(buildJdPublicPath(req.file));
         console.error('Error updating requirement:', error);
-        res.status(500).json({ message: 'Server error', error: error.message });
+        res.status(500).json({ message: error.message || 'Server error', error: error.message });
+    }
+});
+
+app.get('/api/requirements/:id/jd', async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const requirement = await NewRequirment.findById(id);
+        if (!requirement || !requirement.jdPdf) {
+            return res.status(404).json({ message: 'JD PDF not found for this requirement.' });
+        }
+
+        const actorId = req.user?.id || req.query.userId;
+        const actor = actorId ? await NewUser.findById(actorId) : null;
+        if (!actor || !(await canUserViewRequirement(actor, requirement))) {
+            return res.status(403).json({ message: 'You do not have access to this JD PDF.' });
+        }
+
+        const absolutePath = resolveJdAbsolutePath(requirement.jdPdf);
+        if (!absolutePath || !fs.existsSync(absolutePath)) {
+            return res.status(404).json({ message: 'JD PDF file is missing on the server.' });
+        }
+
+        const fileName = requirement.jdPdfOriginalName || `JD-${requirement.regId || id}.pdf`;
+        const disposition = req.query.download === '1' ? 'attachment' : 'inline';
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `${disposition}; filename="${fileName.replace(/"/g, '')}"`);
+        return res.sendFile(absolutePath);
+    } catch (error) {
+        console.error('Error serving JD PDF:', error);
+        return res.status(500).json({ message: 'Unable to open JD PDF.' });
     }
 });
 
