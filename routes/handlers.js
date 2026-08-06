@@ -625,13 +625,9 @@ app.put("/UpdateClient/:id", async(req,res)=>{
 
 app.post("/newRequirment", jdPdfUpload.single('jdPdf'), async(req,res)=>{ 
     try{
-        if (!req.file) {
-          return res.json({ status: 'Failed', msg: 'JD PDF is required (maximum 5 MB).' });
-        }
-
         const assessmentValidation = validateAssessments(req.body.assessments);
         if (!assessmentValidation.ok) {
-          deleteJdFileIfExists(buildJdPublicPath(req.file));
+          if (req.file) deleteJdFileIfExists(buildJdPublicPath(req.file));
           return res.json({ status: 'Failed', msg: assessmentValidation.message });
         }
 
@@ -662,8 +658,10 @@ app.post("/newRequirment", jdPdfUpload.single('jdPdf'), async(req,res)=>{
           interviewProcess: req.body.interviewProcess || '',
           remarks: req.body.remarks || '',
           assessments: assessmentValidation.assessments,
-          jdPdf: buildJdPublicPath(req.file),
-          jdPdfOriginalName: req.file.originalname,
+          ...(req.file ? {
+            jdPdf: buildJdPublicPath(req.file),
+            jdPdfOriginalName: req.file.originalname,
+          } : {}),
         });
         await newRequirment.save();
         if (req.body.uploadedBy) {
@@ -2135,8 +2133,6 @@ app.put('/editRequirement/:id', jdPdfUpload.single('jdPdf'), async (req, res) =>
             deleteJdFileIfExists(requirement.jdPdf);
             updateData.jdPdf = buildJdPublicPath(req.file);
             updateData.jdPdfOriginalName = req.file.originalname;
-        } else if (!requirement.jdPdf) {
-            return res.status(400).json({ message: 'JD PDF is required. Please upload a PDF (maximum 5 MB).' });
         }
 
         const updatedRequirement = await NewRequirment.findByIdAndUpdate(id, updateData, {
