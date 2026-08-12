@@ -10,7 +10,7 @@ const CandidateSchema = new mongoose.Schema({
   date: { type: Date, default: Date.now },
   firstName: { type: String, required: true },
   lastName: { type: String, required: true },
-  dob: { type: Date, required: true },
+  dob: { type: Date },
   mobileNumber: { type: String, required: true },
   email: { type: String, required: true },
   ctc: { type: String, required: true },
@@ -28,6 +28,7 @@ const CandidateSchema = new mongoose.Schema({
     {
       Status: { type: String, required: true },
       Date: { type: Date, default: Date.now },
+      Remark: { type: String, default: '' },
     },
   ],
   savedStatus: { type: String, enum: ['Saved', 'Uploaded'] },

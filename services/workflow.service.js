@@ -282,6 +282,123 @@ async function loadWorkflowData() {
   return { requirements, users, rows, reqMap, userMap };
 }
 
+function isInDateRange(value, fromDate, toDate) {
+  if (!fromDate && !toDate) return true;
+  if (!value) return false;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+
+  if (fromDate) {
+    const from = new Date(fromDate);
+    from.setHours(0, 0, 0, 0);
+    if (date < from) return false;
+  }
+
+  if (toDate) {
+    const to = new Date(toDate);
+    to.setHours(23, 59, 59, 999);
+    if (date > to) return false;
+  }
+
+  return true;
+}
+
+function computeRecruiterWorkLog(rows, reqMap, userMap, scope, fromDate, toDate) {
+  const profiles = [];
+  const requirementStats = new Map();
+
+  const trackRequirement = (row, activityDate, activityType) => {
+    const req = reqMap.get(row.reqId);
+    const existing = requirementStats.get(row.reqId) || {
+      requirementId: row.reqId,
+      regId: req?.regId || row.reqId,
+      client: req?.client || '—',
+      role: req?.role || row.candidate.role || '—',
+      profilesSubmitted: 0,
+      statusUpdates: 0,
+      lastWorkedOn: null,
+    };
+
+    if (activityType === 'upload') {
+      existing.profilesSubmitted += 1;
+    } else if (activityType === 'status') {
+      existing.statusUpdates += 1;
+    }
+
+    const activity = activityDate ? new Date(activityDate) : null;
+    if (activity && !Number.isNaN(activity.getTime())) {
+      if (!existing.lastWorkedOn || activity > new Date(existing.lastWorkedOn)) {
+        existing.lastWorkedOn = activity.toISOString();
+      }
+    }
+
+    requirementStats.set(row.reqId, existing);
+  };
+
+  rows.forEach((row) => {
+    if (!rowInScope(row, scope)) return;
+
+    const uploadedOn = row.candidate.uploadedOn;
+    const statusDate = getLastStatusDate(row.candidate);
+    const uploadedInRange = isInDateRange(uploadedOn, fromDate, toDate);
+    const statusInRange = isInDateRange(statusDate, fromDate, toDate)
+      && getLatestStatus(row.candidate) !== 'No Action Taken';
+
+    if (uploadedInRange) {
+      const req = reqMap.get(row.reqId);
+      const name = `${row.candidate.firstName || ''} ${row.candidate.lastName || ''}`.trim();
+      profiles.push({
+        candidateId: row.candidate._id?.toString(),
+        candidateName: name || '—',
+        client: req?.client || '—',
+        role: row.candidate.role || req?.role || '—',
+        regId: req?.regId || row.reqId,
+        requirementId: row.reqId,
+        status: getLatestStatus(row.candidate),
+        uploadedOn: uploadedOn ? new Date(uploadedOn).toISOString() : null,
+        activity: 'Profile Submitted',
+      });
+      trackRequirement(row, uploadedOn, 'upload');
+    }
+
+    if (statusInRange) {
+      trackRequirement(row, statusDate, 'status');
+    }
+  });
+
+  const requirements = Array.from(requirementStats.values())
+    .sort((a, b) => new Date(b.lastWorkedOn || 0) - new Date(a.lastWorkedOn || 0));
+
+  return {
+    profiles: profiles.sort((a, b) => new Date(b.uploadedOn || 0) - new Date(a.uploadedOn || 0)),
+    requirements,
+    summary: {
+      profilesSubmitted: profiles.length,
+      requirementsWorked: requirements.length,
+    },
+  };
+}
+
+async function getRecruiterWorkLogForUser(userId, fromDate, toDate) {
+  const { requirements, users, rows, reqMap, userMap } = await loadWorkflowData();
+  const user = users.find((item) => item._id.toString() === userId);
+  if (!user) {
+    return { status: 'Error', msg: 'User not found', profiles: [], requirements: [], summary: {} };
+  }
+
+  const scope = buildScope(user, requirements);
+  const workLog = computeRecruiterWorkLog(rows, reqMap, userMap, scope, fromDate, toDate);
+
+  return {
+    status: 'Success',
+    generatedAt: new Date().toISOString(),
+    role: user.UserType,
+    fromDate: fromDate || null,
+    toDate: toDate || null,
+    ...workLog,
+  };
+}
+
 async function getTodayMonitorForUser(userId) {
   const { requirements, users, rows, reqMap, userMap } = await loadWorkflowData();
   const user = users.find((item) => item._id.toString() === userId);
@@ -347,6 +464,7 @@ async function getNotificationsForUser(userId) {
 
 module.exports = {
   getTodayMonitorForUser,
+  getRecruiterWorkLogForUser,
   getUpcomingInterviewsForUser,
   getNotificationsForUser,
   formatInterviewLabel,

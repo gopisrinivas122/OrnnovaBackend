@@ -13,6 +13,7 @@ const { getAdminAnalytics, computeRequirementFunnel, flattenUploadedCandidates }
 const { checkDuplicateCandidate } = require('../services/candidateDuplicate.service');
 const {
   getTodayMonitorForUser,
+  getRecruiterWorkLogForUser,
   getUpcomingInterviewsForUser,
   getNotificationsForUser,
 } = require('../services/workflow.service');
@@ -33,6 +34,12 @@ const {
   isRequirementWorkBlocked,
   normalizeRequirementType,
 } = require('../utils/requirementType');
+const {
+  buildRequirementReqIdIndex,
+  groupCandidateDocsByRequirement,
+  summarizeRequirementCandidates,
+  buildCandidateReqIdValues,
+} = require('../utils/requirementCandidateCounts');
 const { importRequirements } = require('../services/requirementImport.service');
 const { importClients } = require('../services/clientImport.service');
 const { hashPassword } = require('../utils/password');
@@ -631,10 +638,16 @@ app.post("/newRequirment", jdPdfUpload.single('jdPdf'), async(req,res)=>{
           return res.json({ status: 'Failed', msg: assessmentValidation.message });
         }
 
+        const contractType = String(req.body.typeOfContract || '').trim();
+        if (!contractType || !['FTE', 'C2H', 'FTE/C2H'].includes(contractType)) {
+          if (req.file) deleteJdFileIfExists(buildJdPublicPath(req.file));
+          return res.json({ status: 'Failed', msg: 'Type Of Contract (FTE, C2H, or FTE/C2H) is required.' });
+        }
+
         let newRequirment = new NewRequirment({
           regId:req.body.regId,
           client:req.body.client,
-          typeOfContract:req.body.typeOfContract,
+          typeOfContract: contractType,
           startDate:req.body.startDate,
           duration:req.body.duration,
           location:req.body.location,
@@ -922,12 +935,49 @@ app.get("/actions/:id/:userid", async (req, res) => {
 //     }
 // });
 
-// Multer configuration for handling multiple file uploads
-const uploadFields = upload.fields([
-    { name: 'updatedResume', maxCount: 1 },
-    { name: 'ornnovaProfile', maxCount: 1 },
-    { name: 'candidateImage', maxCount: 1 }
-]);
+function normalizeRecruiterId(recruiterId) {
+    if (!recruiterId) return [];
+    return Array.isArray(recruiterId) ? recruiterId.map(String) : [String(recruiterId)];
+}
+
+async function findCandidateDocsForRequirementKey(reqId) {
+    const requirement = await NewRequirment.findOne({
+        $or: [
+            ...(isValidObjectId(reqId) ? [{ _id: reqId }] : []),
+            { regId: String(reqId) },
+        ],
+    }).lean();
+
+    const reqIdValues = buildCandidateReqIdValues(reqId, requirement);
+    return CandidateModel.find({ reqId: { $in: reqIdValues } }).exec();
+}
+
+async function appendCandidateForRecruiter(reqId, recruiterId, candidateData) {
+    const normalizedRecruiterId = normalizeRecruiterId(recruiterId);
+    candidateData.recruiterId = normalizeRecruiterId(candidateData.recruiterId || recruiterId);
+
+    const validationDoc = new CandidateModel({
+        reqId: String(reqId),
+        recruiterId: normalizedRecruiterId,
+        candidates: [candidateData],
+    });
+    await validationDoc.validate();
+
+    const updated = await CandidateModel.findOneAndUpdate(
+        { reqId: String(reqId), recruiterId: normalizedRecruiterId[0] },
+        {
+            $push: { candidates: candidateData },
+            $setOnInsert: { reqId: String(reqId), recruiterId: normalizedRecruiterId },
+        },
+        { upsert: true, new: true }
+    );
+
+    if (!updated) {
+        throw new Error('Failed to save candidate data');
+    }
+
+    return updated;
+}
 
 app.post('/Candidates', uploadFields, async (req, res) => {
     try {
@@ -981,25 +1031,18 @@ if (req.files['candidateImage'] && req.files['candidateImage'][0]) {
         }
 
 
-        // Check if a record with the same reqId and recruiterId exists
-        let existingCandidate = await CandidateModel.findOne({ reqId, recruiterId });
-
-        if (existingCandidate) {
-            // Add the new candidate to the existing candidates array
-            existingCandidate.candidates.push(candidateData);
-            await existingCandidate.save();
-        } else {
-            // Create a new document with the candidate details
-            const newCandidate = new CandidateModel({ reqId, recruiterId, candidates: [candidateData] });
-            await newCandidate.save();
-        }
+        await appendCandidateForRecruiter(reqId, recruiterId, candidateData);
 
         await syncRequirementCandidateCount(reqId);
 
         res.status(200).json({ message: 'Candidate data saved successfully' });
     } catch (error) {
         console.error('Error saving candidate data:', error);
-        res.status(500).json({ message: 'Failed to save candidate data' });
+        const statusCode = error.name === 'ValidationError' ? 400 : 500;
+        const message = error.name === 'ValidationError'
+            ? error.message
+            : (error.message || 'Failed to save candidate data');
+        res.status(statusCode).json({ message });
     }
 });
 
@@ -1185,8 +1228,7 @@ app.get('/api/recruiters/:reqId', async (req, res) => {
     }
 
     try {
-        // Fetch requirements based on reqId
-        const requirements = await CandidateModel.find({ reqId }).exec();
+        const requirements = await findCandidateDocsForRequirementKey(reqId);
 
         if (requirements.length === 0) {
             return res.status(404).json({ message: 'Requirement(s) not found' });
@@ -1250,8 +1292,7 @@ app.get('/userUploads/:reqId/:userId', async (req, res) => {
     }
 
     try {
-        // Fetch requirements based on reqId
-        const requirements = await CandidateModel.find({ reqId }).exec();
+        const requirements = await findCandidateDocsForRequirementKey(reqId);
 
         if (requirements.length === 0) {
             return res.status(404).json({ message: 'Requirement(s) not found' });
@@ -2182,7 +2223,7 @@ app.get('/api/requirements/:id/jd', async (req, res) => {
 // Update candidate status using only the candidate ID
 app.put('/updatestatus/:candidateId', async (req, res) => {
     const candidateId = req.params.candidateId;
-    const { status, interviewDate, interviewTime } = req.body;
+    const { status, interviewDate, interviewTime, remark } = req.body;
     const INTERVIEW_SCHEDULE_STATUSES = ['L1 Schedule', 'L2 Schedule', 'L1 Pending', 'L2 Pending'];
     const normalizedStatus = status === 'L1 Pending'
         ? 'L1 Schedule'
@@ -2192,6 +2233,10 @@ app.put('/updatestatus/:candidateId', async (req, res) => {
 
     if (!status) {
         return res.status(400).json({ message: 'Status is required' });
+    }
+
+    if (!remark || !String(remark).trim()) {
+        return res.status(400).json({ message: 'Remark is required when updating status.' });
     }
 
     if (INTERVIEW_SCHEDULE_STATUSES.includes(status) && !interviewDate) {
@@ -2206,15 +2251,17 @@ app.put('/updatestatus/:candidateId', async (req, res) => {
                 'candidates.$.Status': {
                     Status: normalizedStatus,
                     Date: new Date(),
+                    Remark: String(remark).trim(),
                 },
+            },
+            $set: {
+                'candidates.$.remark': String(remark).trim(),
             },
         };
 
         if (interviewDate) {
-            updateOps.$set = {
-                'candidates.$.interviewDate': interviewDate,
-                'candidates.$.interviewTime': interviewTime || '',
-            };
+            updateOps.$set['candidates.$.interviewDate'] = interviewDate;
+            updateOps.$set['candidates.$.interviewTime'] = interviewTime || '';
         }
 
         const updatedMain = await CandidateModel.findOneAndUpdate(
@@ -2243,13 +2290,8 @@ app.get('/admingetrequirements', async (req, res) => {
             CandidateModel.find(),
         ]);
 
-        const candidatesByReqId = allCandidateDocs.reduce((acc, doc) => {
-            const reqKey = doc.reqId?.toString();
-            if (!reqKey) return acc;
-            if (!acc[reqKey]) acc[reqKey] = [];
-            acc[reqKey].push(doc);
-            return acc;
-        }, {});
+        const reqIdIndex = buildRequirementReqIdIndex(requirements);
+        const candidatesByReqId = groupCandidateDocsByRequirement(allCandidateDocs, reqIdIndex);
 
         const enrichedRequirements = requirements.map((requirement) => {
             const clientId = requirement.clientId;
@@ -2261,35 +2303,17 @@ app.get('/admingetrequirements', async (req, res) => {
             );
 
             const relatedDocuments = candidatesByReqId[reqId] || [];
-            const requirementData = relatedDocuments[0] || null;
-            const candidates = requirementData ? requirementData.candidates : [];
-
-            const uploadedCandidates = candidates.filter((candidate) =>
-                candidate.savedStatus === "Uploaded"
-            );
-
-            const allCandidates = relatedDocuments.reduce((acc, doc) => {
-                return acc.concat(doc.candidates || []);
-            }, []);
-
-            const noactionCandidates = allCandidates.filter((candidate) =>
-                candidate.savedStatus === "Uploaded" &&
-                (
-                    !candidate.Status ||
-                    candidate.Status.length === 0 ||
-                    candidate.Status.every((status) =>
-                        !status.Status || status.Status.length === 0
-                    )
-                )
-            );
+            const candidateSummary = summarizeRequirementCandidates(relatedDocuments);
 
             return {
                 ...requirement.toObject(),
                 userCount: users.length,
                 userDetails: users,
-                uploadedCandidates,
-                noactionCandidates,
-                noactionCandidatesCount: noactionCandidates.length,
+                uploadedCandidates: candidateSummary.uploadedCandidates,
+                uploadedCandidatesCount: candidateSummary.uploadedCandidatesCount,
+                noactionCandidates: candidateSummary.noactionCandidates,
+                noactionCandidatesCount: candidateSummary.noactionCandidatesCount,
+                actionTakenCandidatesCount: candidateSummary.actionTakenCandidatesCount,
                 claimStatus: requirement.claimStatus || ((requirement.claimedBy || []).length ? 'Claimed' : 'Assigned'),
             };
         });
@@ -2552,6 +2576,15 @@ app.get('/api/teamlead/today-monitor/:userId', asyncHandler(async (req, res) => 
 
 app.get('/api/work/today-monitor/:userId', asyncHandler(async (req, res) => {
     const data = await getTodayMonitorForUser(req.params.userId);
+    res.json(data);
+}));
+
+app.get('/api/work/recruiter-log/:userId', asyncHandler(async (req, res) => {
+    const { from, to } = req.query;
+    const data = await getRecruiterWorkLogForUser(req.params.userId, from, to);
+    if (data.status === 'Error') {
+        return res.status(404).json(data);
+    }
     res.json(data);
 }));
 
