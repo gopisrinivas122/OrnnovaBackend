@@ -59,10 +59,177 @@ function resolveRecruiterName(row, userMap) {
   return 'Unknown';
 }
 
+function isUploadedOnInRange(uploadedOn, fromDate, toDate) {
+  if (!fromDate && !toDate) return true;
+  if (!uploadedOn) return false;
+
+  const date = new Date(uploadedOn);
+  if (Number.isNaN(date.getTime())) return false;
+
+  if (fromDate) {
+    const from = new Date(fromDate);
+    from.setHours(0, 0, 0, 0);
+    if (date < from) return false;
+  }
+
+  if (toDate) {
+    const to = new Date(toDate);
+    to.setHours(23, 59, 59, 999);
+    if (date > to) return false;
+  }
+
+  return true;
+}
+
+function resolveUploaderIds(row) {
+  const ids = new Set();
+
+  (row.recruiterIds || []).forEach((id) => {
+    if (id != null && String(id).trim()) ids.add(String(id).trim());
+  });
+
+  const candidateRecruiterId = row.candidate?.recruiterId;
+  if (Array.isArray(candidateRecruiterId)) {
+    candidateRecruiterId.forEach((id) => {
+      if (id != null && String(id).trim()) ids.add(String(id).trim());
+    });
+  } else if (candidateRecruiterId != null && String(candidateRecruiterId).trim()) {
+    ids.add(String(candidateRecruiterId).trim());
+  }
+
+  return [...ids];
+}
+
+function resolvePrimaryUploaderId(row) {
+  const ids = resolveUploaderIds(row);
+  return ids[0] || null;
+}
+
+function buildUploaderBreakdown(rows, reqMap, fromDate, toDate) {
+  const counts = new Map();
+
+  rows.forEach((row) => {
+    if (!isUploadedOnInRange(row.candidate.uploadedOn, fromDate, toDate)) return;
+    const uploaderId = resolvePrimaryUploaderId(row);
+    if (!uploaderId) return;
+    const req = reqMap.get(row.reqId);
+    const client = req?.client || '—';
+    const requirementRole = req?.role || '—';
+    const key = `${uploaderId}\u0001${client}\u0001${requirementRole}`;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+
+  return [...counts.entries()].map(([key, count]) => {
+    const [uploaderId, client, requirementRole] = key.split('\u0001');
+    return { uploaderId, client, requirementRole, count };
+  });
+}
+
+function buildProfilesSourcedRow(userMap, entry, roleLabel) {
+  const user = userMap.get(entry.uploaderId);
+  return {
+    userId: entry.uploaderId,
+    name: user?.EmployeeName || 'Unknown',
+    role: roleLabel,
+    client: entry.client,
+    requirementRole: entry.requirementRole,
+    profilesSourced: entry.count,
+    isTotal: false,
+  };
+}
+
+function computeProfilesSourcedReport(rows, users, reqMap, filters = {}) {
+  const fromDate = filters.fromDate || '';
+  const toDate = filters.toDate || '';
+  const recruiterId = filters.recruiterId || '';
+  const teamLeadId = filters.teamLeadId || '';
+
+  const userMap = buildUserMap(users);
+  const breakdown = buildUploaderBreakdown(rows, reqMap, fromDate, toDate);
+
+  const filterOptions = {
+    teamLeads: users
+      .filter((user) => user.UserType === 'TeamLead')
+      .map((user) => ({ id: user._id.toString(), name: user.EmployeeName || '—' }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    recruiters: users
+      .filter((user) => user.UserType === 'User')
+      .map((user) => ({ id: user._id.toString(), name: user.EmployeeName || '—' }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+  };
+
+  const resolveRoleLabel = (uploaderId) => {
+    const user = userMap.get(uploaderId);
+    if (!user) return 'Recruiter';
+    if (teamLeadId && uploaderId === teamLeadId) return 'Team Lead';
+    return user.UserType === 'TeamLead' ? 'Team Lead' : 'Recruiter';
+  };
+
+  let reportRows = [];
+  let total = 0;
+
+  if (recruiterId) {
+    reportRows = breakdown
+      .filter((entry) => entry.uploaderId === recruiterId)
+      .map((entry) => buildProfilesSourcedRow(userMap, entry, resolveRoleLabel(recruiterId)))
+      .sort((a, b) => a.client.localeCompare(b.client) || a.requirementRole.localeCompare(b.requirementRole));
+    total = reportRows.reduce((sum, row) => sum + row.profilesSourced, 0);
+  } else if (teamLeadId) {
+    const teamLead = userMap.get(teamLeadId);
+    if (teamLead) {
+      const memberIds = new Set([teamLeadId, ...((teamLead.Team || []).map(String))]);
+      reportRows = breakdown
+        .filter((entry) => memberIds.has(entry.uploaderId))
+        .map((entry) => buildProfilesSourcedRow(userMap, entry, resolveRoleLabel(entry.uploaderId)))
+        .sort((a, b) => (
+          a.name.localeCompare(b.name)
+          || a.client.localeCompare(b.client)
+          || a.requirementRole.localeCompare(b.requirementRole)
+        ));
+      total = reportRows.reduce((sum, row) => sum + row.profilesSourced, 0);
+      reportRows.push({
+        userId: '',
+        name: 'Total',
+        role: '',
+        client: '',
+        requirementRole: '',
+        profilesSourced: total,
+        isTotal: true,
+      });
+    }
+  } else {
+    reportRows = breakdown
+      .filter((entry) => {
+        const user = userMap.get(entry.uploaderId);
+        return user && ['User', 'TeamLead'].includes(user.UserType);
+      })
+      .map((entry) => buildProfilesSourcedRow(userMap, entry, resolveRoleLabel(entry.uploaderId)))
+      .sort((a, b) => (
+        a.name.localeCompare(b.name)
+        || a.client.localeCompare(b.client)
+        || a.requirementRole.localeCompare(b.requirementRole)
+      ));
+    total = reportRows.reduce((sum, row) => sum + row.profilesSourced, 0);
+  }
+
+  return {
+    filters: {
+      fromDate: fromDate || null,
+      toDate: toDate || null,
+      recruiterId: recruiterId || null,
+      teamLeadId: teamLeadId || null,
+    },
+    filterOptions,
+    rows: reportRows,
+    total,
+  };
+}
+
 function computePipelineFunnel(rows) {
   return FUNNEL_STAGES.map((stage) => {
     const count = rows.filter((row) => {
       const status = getLatestStatus(row.candidate);
+      if (isRejectedStatus(status)) return false;
       return hasReachedStage(status, stage.minRank);
     }).length;
 
@@ -88,13 +255,16 @@ function computeDashboardStats(requirements, rows) {
 
   rows.forEach((row) => {
     const status = getLatestStatus(row.candidate);
+    if (isRejectedStatus(status)) {
+      rejections += 1;
+      return;
+    }
     if (hasReachedStage(status, 5)) interviews += 1;
     if (hasOfferStatus(status, row.candidate)) offers += 1;
     if (getLatestStatus(row.candidate) === 'Onboard Confirmation' || String(row.candidate.offerInHand || '').toLowerCase() === 'yes') {
       offerAccept += 1;
     }
     if (isJoinedStatus(status)) joinings += 1;
-    if (isRejectedStatus(status)) rejections += 1;
   });
 
   const positions = openRequirements.reduce((sum, req) => sum + (req.numberOfPositions || 1), 0);
@@ -112,100 +282,6 @@ function computeDashboardStats(requirements, rows) {
     onHold,
     closurePercent,
   };
-}
-
-function computeOpenRequirements(requirements, rows, reqMap) {
-  return requirements
-    .filter((req) => {
-      const normalized = normalizeRequirementType(req.requirementtype);
-      return normalized && normalized !== 'Cancel';
-    })
-    .map((req) => {
-      const reqId = req._id.toString();
-      const reqRows = rows.filter((row) => row.reqId === reqId);
-      const shared = reqRows.filter((row) => hasReachedStage(getLatestStatus(row.candidate), 3)).length;
-
-      return {
-        reqId: req.regId || reqId,
-        requirementId: reqId,
-        client: req.client || '—',
-        role: req.role || '—',
-        openings: req.numberOfPositions || 1,
-        shared,
-        status: normalizeRequirementType(req.requirementtype) || 'High',
-      };
-    })
-    .sort((a, b) => b.shared - a.shared);
-}
-
-function computeRecruiterPerformance(rows, userMap) {
-  const stats = new Map();
-
-  const ensure = (name) => {
-    if (!stats.has(name)) {
-      stats.set(name, {
-        recruiter: name,
-        shared: 0,
-        shortlisted: 0,
-        interview: 0,
-        offers: 0,
-        joined: 0,
-      });
-    }
-    return stats.get(name);
-  };
-
-  rows.forEach((row) => {
-    const name = resolveRecruiterName(row, userMap);
-    const entry = ensure(name);
-    const status = getLatestStatus(row.candidate);
-
-    if (hasReachedStage(status, 3)) entry.shared += 1;
-    if (hasReachedStage(status, 4)) entry.shortlisted += 1;
-    if (hasReachedStage(status, 5)) entry.interview += 1;
-    if (hasOfferStatus(status, row.candidate)) entry.offers += 1;
-    if (isJoinedStatus(status)) entry.joined += 1;
-  });
-
-  return Array.from(stats.values()).sort((a, b) => b.shared - a.shared);
-}
-
-function computeClientStats(requirements, rows, reqMap) {
-  const stats = new Map();
-
-  requirements.forEach((req) => {
-    const client = req.client || 'Unknown';
-    if (!stats.has(client)) {
-      stats.set(client, {
-        client,
-        requirements: 0,
-        shared: 0,
-        offers: 0,
-        joined: 0,
-      });
-    }
-    stats.get(client).requirements += 1;
-  });
-
-  rows.forEach((row) => {
-    const req = reqMap.get(row.reqId);
-    const client = req?.client || 'Unknown';
-    const entry = stats.get(client) || {
-      client,
-      requirements: 0,
-      shared: 0,
-      offers: 0,
-      joined: 0,
-    };
-    if (!stats.has(client)) stats.set(client, entry);
-
-    const status = getLatestStatus(row.candidate);
-    if (hasReachedStage(status, 3)) entry.shared += 1;
-    if (hasOfferStatus(status, row.candidate)) entry.offers += 1;
-    if (isJoinedStatus(status)) entry.joined += 1;
-  });
-
-  return Array.from(stats.values()).sort((a, b) => b.shared - a.shared);
 }
 
 function computeUpcomingInterviews(rows, reqMap, days = 3) {
@@ -252,7 +328,10 @@ function computeRequirementFunnel(requirementId, requirements, rows, userMap = n
   const reqRows = rows.filter((row) => row.reqId === requirementId);
   const recruiterStats = new Map();
 
-  reqRows.forEach((row) => {
+  const activeRows = reqRows.filter((row) => !isRejectedStatus(getLatestStatus(row.candidate)));
+  const rejectedRows = reqRows.filter((row) => isRejectedStatus(getLatestStatus(row.candidate)));
+
+  activeRows.forEach((row) => {
     const name = resolveRecruiterName(row, userMap);
     if (!recruiterStats.has(name)) {
       recruiterStats.set(name, { recruiter: name, shared: 0, joined: 0 });
@@ -262,7 +341,7 @@ function computeRequirementFunnel(requirementId, requirements, rows, userMap = n
     if (isJoinedStatus(status)) recruiterStats.get(name).joined += 1;
   });
 
-  const statuses = reqRows.map((row) => getLatestStatus(row.candidate));
+  const statuses = activeRows.map((row) => getLatestStatus(row.candidate));
 
   return {
     requirementId,
@@ -276,13 +355,14 @@ function computeRequirementFunnel(requirementId, requirements, rows, userMap = n
     interviews: statuses.filter((s) => hasReachedStage(s, 5)).length,
     selected: statuses.filter((s) => hasReachedStage(s, 7)).length,
     offersReleased: statuses.filter((s) => hasReachedStage(s, 8)).length,
-    offersAccepted: reqRows.filter((row) => hasOfferStatus(getLatestStatus(row.candidate), row.candidate)).length,
+    offersAccepted: activeRows.filter((row) => hasOfferStatus(getLatestStatus(row.candidate), row.candidate)).length,
     joined: statuses.filter((s) => isJoinedStatus(s)).length,
+    rejected: rejectedRows.length,
     recruiters: Array.from(recruiterStats.values()),
   };
 }
 
-async function getAdminAnalytics() {
+async function getAdminAnalytics(filters = {}) {
   const [requirements, users, candidateDocs] = await Promise.all([
     NewRequirment.find().lean(),
     NewUser.find({ UserType: { $in: ['User', 'TeamLead'] } }).lean(),
@@ -298,10 +378,8 @@ async function getAdminAnalytics() {
     generatedAt: new Date().toISOString(),
     dashboardStats: computeDashboardStats(requirements, rows),
     pipelineFunnel: computePipelineFunnel(rows),
-    openRequirements: computeOpenRequirements(requirements, rows, reqMap),
-    recruiterPerformance: computeRecruiterPerformance(rows, userMap),
-    clientStats: computeClientStats(requirements, rows, reqMap),
     upcomingInterviews: computeUpcomingInterviews(rows, reqMap, 3),
+    profilesSourcedReport: computeProfilesSourcedReport(rows, users, reqMap, filters),
   };
 }
 
@@ -310,4 +388,5 @@ module.exports = {
   computeRequirementFunnel,
   flattenUploadedCandidates,
   buildRequirementMap,
+  computeProfilesSourcedReport,
 };

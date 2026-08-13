@@ -5,7 +5,7 @@ const {
   flattenUploadedCandidates,
   buildRequirementMap,
 } = require('./adminAnalytics.service');
-const { getLatestStatus } = require('../utils/candidateStatusMap');
+const { getLatestStatus, isRejectedStatus } = require('../utils/candidateStatusMap');
 const {
   matchesStage,
   getStageByKey,
@@ -197,6 +197,7 @@ function countByStage(scopedRows) {
 
   scopedRows.forEach((row) => {
     const status = getLatestStatus(row.candidate);
+    if (isRejectedStatus(status)) return;
     getFlowStages().forEach((stage) => {
       if (matchesStage(stage.key, status, row.candidate)) {
         counts[stage.key] += 1;
@@ -227,12 +228,17 @@ async function getTrackingSummary(viewerUserId, filters = {}) {
     formatCandidateRow(row, context.reqMap, context.userMap)
   );
 
+  const rejectedProfiles = context.scopedRows.filter((row) =>
+    isRejectedStatus(getLatestStatus(row.candidate))
+  ).length;
+
   return {
     status: 'Success',
     generatedAt: new Date().toISOString(),
     role: context.viewer.UserType,
     filters,
     totalProfiles: context.scopedRows.length,
+    rejectedProfiles,
     kpiStages,
     flowStages,
     candidates,

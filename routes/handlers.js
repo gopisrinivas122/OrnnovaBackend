@@ -54,7 +54,15 @@ const {
   canUserEditRequirement,
   canUserViewRequirement,
   getCreatedBy,
+  hasUserClaimed,
+  isUserAssignedToRequirement,
+  canUserAssignRequirement,
 } = require('../services/requirementWorkflow.service');
+const {
+  parseAssignedMemberIds,
+  assignRequirementToMembers,
+  getAssignableMembers,
+} = require('../services/requirementMemberAssignment.service');
 const { canTeamLeadManageRequirement } = require('../utils/requirementVisibility');
 const { validateAssessments } = require('../utils/requirementAssessments');
 const {
@@ -62,6 +70,13 @@ const {
   resolveJdAbsolutePath,
   deleteJdFileIfExists,
 } = require('../utils/requirementJd');
+const { getRejectedCandidatesReport } = require('../services/rejectedCandidates.service');
+const {
+  isRejectedStatus,
+  getRejectionStageLabel,
+  getLatestStatus,
+  isActiveCandidate,
+} = require('../utils/candidateStatusMap');
 
 module.exports = (app) => {
  app.get("/loggedinuserdata/:email", asyncHandler(async (req, res) => {
@@ -142,6 +157,12 @@ app.get("/userDetailsHome", asyncHandler(async (req, res) => {
     const userDetailshome = await NewUser.find().select('-Password');
     res.json(userDetailshome);
 }));
+
+app.get('/api/assignable-members', asyncHandler(async (req, res) => {
+    const members = await getAssignableMembers();
+    res.json(members);
+}));
+
 // Assign Clients to Users
 app.get('/userDetailstoAssignClient/:clientId', async (req, res) => {
     const clientId = req.params.clientId;
@@ -229,7 +250,7 @@ app.get('/userDetailstoAssignRequirement/:reqId/:userId', async (req, res) => {
         // Find the team members who do not have the specified reqId in their Requirements array
         const teamMembers = await NewUser.find({
             _id: { $in: teamIds },
-            UserType: { $in: ["User"] },
+            UserType: { $in: ['User'] },
             Requirements: { $ne: reqId },
             ...activeUserFilter,
         });
@@ -242,7 +263,12 @@ app.get('/userDetailstoAssignRequirement/:reqId/:userId', async (req, res) => {
         }
 
         // Return both team members and the requirement details
-        res.json({ teamMembers, requirementDetails });
+        const enrichedRequirement = await enrichRequirementWorkflow(requirementDetails, user);
+
+        res.json({
+            teamMembers,
+            requirementDetails: enrichedRequirement,
+        });
     } catch (error) {
         res.status(500).json({ message: "Server Error", error });
     }
@@ -263,7 +289,7 @@ app.get('/userDetailsofAssignedRequirement/:reqId/:userId', async (req, res) => 
 
         // Step 2: Find users in the Team who have the specified reqId in their Requirements
         const userDetails = await NewUser.find({
-            UserType: { $in: ["User"] },
+            UserType: { $in: ['User'] },
             Requirements: reqId,
             _id: { $in: teamIds },
             ...activeUserFilter,
@@ -287,7 +313,7 @@ app.get("/getUserDataToADDtoTeam/:id", async (req, res) => {
         }
 
         // Step 2: Get all users with UserType 'User'
-        const allUsers = await NewUser.find({ UserType: "User", ...activeUserFilter });
+        const allUsers = await NewUser.find({ UserType: 'User', ...activeUserFilter });
 
         const teamIds = (user.Team || []).map((memberId) => memberId.toString());
 
@@ -301,8 +327,8 @@ app.get("/getUserDataToADDtoTeam/:id", async (req, res) => {
 
         // Step 5: Respond with team members and non-team members
         res.json({
-            teamMembers: teamMembers,
-            nonTeamMembers: nonTeamMembers
+            teamMembers,
+            nonTeamMembers,
         });
     } catch (err) {
         // Handle errors (e.g., database issues)
@@ -677,10 +703,19 @@ app.post("/newRequirment", jdPdfUpload.single('jdPdf'), async(req,res)=>{
           } : {}),
         });
         await newRequirment.save();
-        if (req.body.uploadedBy) {
-          await attachRequirementToTeamLead(req.body.uploadedBy, newRequirment._id);
+
+        const assignedMemberIds = parseAssignedMemberIds(req.body.assignedMembers);
+        const assignerId = req.body.uploadedBy || req.user?.id || '';
+
+        if (assignedMemberIds.length) {
+          await assignRequirementToMembers(newRequirment, assignedMemberIds, assignerId);
+        } else {
+          if (req.body.uploadedBy) {
+            await attachRequirementToTeamLead(req.body.uploadedBy, newRequirment._id);
+          }
+          await linkRequirementToMatchingTeamLeads(newRequirment);
         }
-        await linkRequirementToMatchingTeamLeads(newRequirment);
+
         res.json({status:"Success",msg:" Requirment Added Successfully✅"});
     }catch(error){
         if (req.file) {
@@ -1064,12 +1099,18 @@ app.get('/candidateCounts/:userId', async (req, res) => {
 
         const documents = await CandidateModel.find(query).select('reqId candidates').exec();
         const counts = {};
+        const rejectedCounts = {};
 
         documents.forEach((doc) => {
-            counts[doc.reqId] = doc.candidates ? doc.candidates.length : 0;
+            const uploaded = (doc.candidates || []).filter((candidate) => candidate.savedStatus === 'Uploaded');
+            const active = uploaded.filter((candidate) => isActiveCandidate(candidate));
+            counts[doc.reqId] = active.length;
+            rejectedCounts[doc.reqId] = uploaded.filter((candidate) =>
+                isRejectedStatus(getLatestStatus(candidate))
+            ).length;
         });
 
-        res.json({ counts });
+        res.json({ counts, rejectedCounts });
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch candidate counts' });
     }
@@ -1216,6 +1257,24 @@ app.get('/api/requirements/:id/claimedByDetails', async (req, res) => {
     } catch (error) {
         res.status(500).json({ message: 'Server error', error });
         console.log(error);
+    }
+});
+
+app.get('/api/requirements/:id/rejected-candidates', async (req, res) => {
+    try {
+        const requirementId = req.params.id;
+        const userId = req.query.userId || null;
+        const candidateDocs = await findCandidateDocsForRequirementKey(requirementId);
+
+        if (!candidateDocs.length) {
+            return res.status(200).json({ total: 0, rows: [], scope: { userType: 'Admin', userId: null } });
+        }
+
+        const report = await getRejectedCandidatesReport(candidateDocs, userId);
+        return res.status(200).json(report);
+    } catch (error) {
+        const statusCode = error.statusCode || 500;
+        return res.status(statusCode).json({ message: error.message || 'Failed to fetch rejected candidates' });
     }
 });
 
@@ -1659,11 +1718,17 @@ app.post('/assignReq/:userId/:requirementId', async (req, res) => {
             const assigner = req.user?.id ? await NewUser.findById(req.user.id) : null;
 
             if (assigner?.UserType === 'TeamLead') {
-                if (getCreatedBy(requirement) !== assigner._id.toString()) {
+                const assignerId = assigner._id.toString();
+                const isCreator = getCreatedBy(requirement) === assignerId;
+                const isAssignedClaimed = isUserAssignedToRequirement(assigner, requirementId)
+                  && hasUserClaimed(requirement, assignerId);
+
+                if (!isCreator && !isAssignedClaimed) {
                     user.Requirements = user.Requirements.filter((id) => id.toString() !== requirementId.toString());
                     await user.save();
-                    return res.status(403).json({ status: 'error', msg: 'Team Lead can assign only their own requirements.' });
+                    return res.status(403).json({ status: 'error', msg: 'Team Lead must claim this requirement before assigning it to recruiters.' });
                 }
+
                 const teamIds = (assigner.Team || []).map((id) => id.toString());
                 if (!teamIds.includes(userId.toString()) && user.UserType !== 'TeamLead') {
                     user.Requirements = user.Requirements.filter((id) => id.toString() !== requirementId.toString());
@@ -2046,19 +2111,20 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
                 ) : [];
                 const totalUserCandidatesCount = totalUserCandidatesDetails.length;
 
-                // Filtered user and team candidates by `savedStatus: "Uploaded"`
-                const userCandidates = totalUserCandidatesDetails.filter(candidate => candidate.savedStatus === 'Uploaded');
+                // Filtered user and team candidates — active uploaded only (excludes rejected)
+                const userCandidates = totalUserCandidatesDetails.filter(isActiveCandidate);
 
                 const teamCandidates = requirementWithCandidates ? requirementWithCandidates.flatMap(req =>
                     req.candidates.filter(candidate =>
-                        activeTeamIds.some((teamId) => teamId.toString() === req.recruiterId.toString()) && candidate.savedStatus === 'Uploaded'
+                        activeTeamIds.some((teamId) => teamId.toString() === req.recruiterId.toString())
+                        && isActiveCandidate(candidate)
                     )
                 ) : [];
 
-                // Total candidate count with "Uploaded" status only
+                // Active upload counts only
                 const totalCandidateCount = userCandidates.length + teamCandidates.length;
 
-                // Filter for today's candidates for both user and team
+                // Filter for today's active candidates for both user and team
                 const todayUserCandidates = userCandidates.filter(candidate => {
                     const uploadedOnDate = new Date(candidate.uploadedOn);
                     return uploadedOnDate >= today && uploadedOnDate < tomorrow;
@@ -2071,8 +2137,14 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
 
                 const todayCandidateCount = todayUserCandidates.length + todayTeamCandidates.length;
 
-                // Combine user and team candidates into totalCandidatesDetails
+                // Combine active user and team candidates
                 const totalCandidatesDetails = [...userCandidates, ...teamCandidates];
+                const allUploadedCandidatesDetails = requirementWithCandidates ? requirementWithCandidates.flatMap(req =>
+                    req.candidates.filter((candidate) => candidate.savedStatus === 'Uploaded')
+                ) : [];
+                const rejectedCandidatesCount = allUploadedCandidatesDetails.filter((candidate) =>
+                    isRejectedStatus(getLatestStatus(candidate))
+                ).length;
 
                 // Combine today's user and team candidates
                 const combinedTodayCandidates = [...todayUserCandidates, ...todayTeamCandidates];
@@ -2088,13 +2160,15 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
                     totalCandidateCount: totalCandidateCount,
                     todayCandidateCount: todayCandidateCount,
                     userCandidatesCount: userCandidates.length,
-                    teamCandidatesCount: teamCandidates.length, // Only "Uploaded" team candidates are counted here
+                    teamCandidatesCount: teamCandidates.length,
+                    userActiveCandidatesDetails: userCandidates,
                     todayUserCandidates: todayUserCandidates,
                     todayTeamCandidates: todayTeamCandidates, // Only "Uploaded" team candidates for today
                     totalUserCandidatesDetails: totalUserCandidatesDetails, // Both "Saved" and "Uploaded" user candidates
                     totalUserCandidatesCount: totalUserCandidatesCount, // Count of both "Saved" and "Uploaded" user candidates
                     totalTeamCandidatesDetails: teamCandidates, // Only "Uploaded" team candidates
                     totalCandidatesDetails: totalCandidatesDetails, // All "Uploaded" candidates (user + team)
+                    rejectedCandidatesCount,
                     combinedTodayCandidates: combinedTodayCandidates // Combined today "Uploaded" candidates (user + team)
                 };
             })
@@ -2223,7 +2297,7 @@ app.get('/api/requirements/:id/jd', async (req, res) => {
 // Update candidate status using only the candidate ID
 app.put('/updatestatus/:candidateId', async (req, res) => {
     const candidateId = req.params.candidateId;
-    const { status, interviewDate, interviewTime, remark } = req.body;
+    const { status, interviewDate, interviewTime, remark, updatedBy } = req.body;
     const INTERVIEW_SCHEDULE_STATUSES = ['L1 Schedule', 'L2 Schedule', 'L1 Pending', 'L2 Pending'];
     const normalizedStatus = status === 'L1 Pending'
         ? 'L1 Schedule'
@@ -2262,6 +2336,17 @@ app.put('/updatestatus/:candidateId', async (req, res) => {
         if (interviewDate) {
             updateOps.$set['candidates.$.interviewDate'] = interviewDate;
             updateOps.$set['candidates.$.interviewTime'] = interviewTime || '';
+        }
+
+        if (isRejectedStatus(normalizedStatus)) {
+            const rejectedByUser = updatedBy
+                ? await NewUser.findById(updatedBy).select('EmployeeName').lean()
+                : null;
+            updateOps.$set['candidates.$.rejectionStage'] = getRejectionStageLabel(normalizedStatus);
+            updateOps.$set['candidates.$.rejectedDate'] = new Date();
+            updateOps.$set['candidates.$.rejectedBy'] = updatedBy ? String(updatedBy) : '';
+            updateOps.$set['candidates.$.rejectedByName'] = rejectedByUser?.EmployeeName || '';
+            updateOps.$set['candidates.$.rejectionReason'] = String(remark).trim();
         }
 
         const updatedMain = await CandidateModel.findOneAndUpdate(
@@ -2311,9 +2396,11 @@ app.get('/admingetrequirements', async (req, res) => {
                 userDetails: users,
                 uploadedCandidates: candidateSummary.uploadedCandidates,
                 uploadedCandidatesCount: candidateSummary.uploadedCandidatesCount,
+                activeCandidatesCount: candidateSummary.activeCandidatesCount,
                 noactionCandidates: candidateSummary.noactionCandidates,
                 noactionCandidatesCount: candidateSummary.noactionCandidatesCount,
                 actionTakenCandidatesCount: candidateSummary.actionTakenCandidatesCount,
+                rejectedCandidatesCount: candidateSummary.rejectedCandidatesCount,
                 claimStatus: requirement.claimStatus || ((requirement.claimedBy || []).length ? 'Claimed' : 'Assigned'),
             };
         });
@@ -2415,7 +2502,13 @@ app.get('/remainingusers/:id', async (req, res) => {
 
 // Phase 1 — Admin analytics (read-only)
 app.get('/api/admin/analytics', asyncHandler(async (req, res) => {
-    const data = await getAdminAnalytics();
+    const { from, to, recruiterId, teamLeadId } = req.query;
+    const data = await getAdminAnalytics({
+        fromDate: from || '',
+        toDate: to || '',
+        recruiterId: recruiterId || '',
+        teamLeadId: teamLeadId || '',
+    });
     res.json(data);
 }));
 

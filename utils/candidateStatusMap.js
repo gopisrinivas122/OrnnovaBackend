@@ -1,10 +1,26 @@
 const REJECTED_STATUSES = new Set([
   'Rejected',
   'Declined',
+  'Candidate Declined',
   'Client Rejected',
   'L1 Rejected',
   'L2 Rejected',
+  'L3 Rejected',
+  'ORNNOVA Screening Reject',
+  'Internal Reject',
 ]);
+
+const REJECTION_STAGE_LABELS = {
+  'ORNNOVA Screening Reject': 'ORNNOVA Screening Reject',
+  Rejected: 'Screening Rejected',
+  'Client Rejected': 'Client Rejected',
+  'Internal Reject': 'Internal Rejected',
+  'L1 Rejected': 'Interview Scheduled',
+  'L2 Rejected': 'Interview Completed',
+  'L3 Rejected': 'HR Round',
+  Declined: 'Offer Declined',
+  'Candidate Declined': 'Offer Declined',
+};
 
 const JOINED_STATUSES = new Set(['Onboarded', 'On Boarded']);
 
@@ -65,6 +81,63 @@ function isRejectedStatus(status) {
   return REJECTED_STATUSES.has(status);
 }
 
+function getRejectionStageLabel(status) {
+  return REJECTION_STAGE_LABELS[status] || status || 'Rejected';
+}
+
+function isActiveCandidate(candidate) {
+  if (!isUploadedCandidate(candidate)) return false;
+  return !isRejectedStatus(getLatestStatus(candidate));
+}
+
+function findLatestRejectionEntry(candidate) {
+  const statusList = candidate?.Status || [];
+  for (let index = statusList.length - 1; index >= 0; index -= 1) {
+    const entry = statusList[index];
+    if (entry?.Status && isRejectedStatus(entry.Status)) {
+      return entry;
+    }
+  }
+  return null;
+}
+
+function getCandidateRejectionDetails(candidate) {
+  const currentStatus = getLatestStatus(candidate);
+  if (!isRejectedStatus(currentStatus)) return null;
+
+  if (candidate?.rejectionStage) {
+    return {
+      rejectionStage: candidate.rejectionStage,
+      rejectedDate: candidate.rejectedDate || null,
+      rejectedBy: candidate.rejectedBy || '',
+      rejectedByName: candidate.rejectedByName || candidate.rejectedBy || '—',
+      rejectionReason: candidate.rejectionReason || candidate.remark || '',
+      currentStatus,
+    };
+  }
+
+  const rejectionEntry = findLatestRejectionEntry(candidate);
+  if (!rejectionEntry) {
+    return {
+      rejectionStage: getRejectionStageLabel(currentStatus),
+      rejectedDate: null,
+      rejectedBy: '',
+      rejectedByName: '—',
+      rejectionReason: candidate?.remark || '',
+      currentStatus,
+    };
+  }
+
+  return {
+    rejectionStage: getRejectionStageLabel(rejectionEntry.Status),
+    rejectedDate: rejectionEntry.Date || null,
+    rejectedBy: '',
+    rejectedByName: '—',
+    rejectionReason: rejectionEntry.Remark || candidate?.remark || '',
+    currentStatus,
+  };
+}
+
 function isJoinedStatus(status) {
   return JOINED_STATUSES.has(status);
 }
@@ -82,6 +155,7 @@ function parseInterviewDate(value) {
 
 module.exports = {
   REJECTED_STATUSES,
+  REJECTION_STAGE_LABELS,
   JOINED_STATUSES,
   FUNNEL_STAGES,
   getLatestStatus,
@@ -89,6 +163,10 @@ module.exports = {
   isUploadedCandidate,
   hasReachedStage,
   isRejectedStatus,
+  getRejectionStageLabel,
+  isActiveCandidate,
+  findLatestRejectionEntry,
+  getCandidateRejectionDetails,
   isJoinedStatus,
   hasOfferStatus,
   parseInterviewDate,

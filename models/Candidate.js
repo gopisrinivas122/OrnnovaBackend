@@ -46,6 +46,11 @@ const CandidateSchema = new mongoose.Schema({
   uploadedOn: { type: Date, default: Date.now },
   recruiterId: [{ type: String, required: true }],
   recruiterName: { type: String },
+  rejectionStage: { type: String },
+  rejectedDate: { type: Date },
+  rejectedBy: { type: String },
+  rejectedByName: { type: String },
+  rejectionReason: { type: String },
 });
 
 const MainSchema = new mongoose.Schema({

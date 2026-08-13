@@ -174,12 +174,37 @@ async function canUserUnclaimRequirement(user, requirement) {
   return candidateCount === 0;
 }
 
+async function canUserAssignRequirement(user, requirement) {
+  if (!user || !requirement || !isActiveUser(user) || user.UserType !== 'TeamLead') {
+    return false;
+  }
+
+  const userId = user._id.toString();
+  const reqId = requirement._id.toString();
+  const isCreator = getCreatedBy(requirement) === userId;
+  const isAssigned = isUserAssignedToRequirement(user, reqId);
+
+  if (isCreator) return true;
+  if (isAssigned && hasUserClaimed(requirement, userId)) return true;
+  return false;
+}
+
 async function canUserUploadToRequirement(user, requirement) {
   if (!user || !requirement || !isActiveUser(user)) return false;
   if (user.UserType === 'Admin') return false;
 
   const userId = user._id.toString();
   return hasUserClaimed(requirement, userId);
+}
+
+function getWorkflowBadge(requirement, user, { canClaim, canUpload }) {
+  if (user && canUpload) return 'Claimed';
+  if (user && canClaim) return 'Pending Claim';
+  if ((requirement?.assignedMembers || []).length > 0 && getClaimStatus(requirement) !== CLAIM_STATUS.CLAIMED) {
+    return 'Assigned';
+  }
+  if (getClaimStatus(requirement) === CLAIM_STATUS.CLAIMED) return 'Claimed';
+  return 'Pending Claim';
 }
 
 async function enrichRequirementWorkflow(requirement, user, options = {}) {
@@ -196,20 +221,26 @@ async function enrichRequirementWorkflow(requirement, user, options = {}) {
     canUnclaim,
     canUpload,
     canEdit,
+    canAssign,
   ] = user
     ? await Promise.all([
       canUserClaimRequirement(user, plain),
       canUserUnclaimRequirement(user, plain),
       canUserUploadToRequirement(user, plain),
       canUserEditRequirement(user, plain),
+      canUserAssignRequirement(user, plain),
     ])
-    : [false, false, false, false];
+    : [false, false, false, false, false];
+
+  const workflowBadge = getWorkflowBadge(plain, user, { canClaim, canUpload });
+  const claimedAt = currentClaim?.claimedDate || plain.claimedAt || null;
 
   return {
     ...plain,
     createdBy: getCreatedBy(plain),
     claimStatus,
     currentClaimedBy: currentClaim,
+    claimedAt,
     candidateCount,
     workflow: {
       claimStatus,
@@ -219,7 +250,12 @@ async function enrichRequirementWorkflow(requirement, user, options = {}) {
       canUnclaim,
       canUpload,
       canEdit,
-      uploadDisabledMessage: 'You must claim this requirement before uploading candidate profiles.',
+      canAssign,
+      workflowBadge,
+      uploadDisabledMessage: canUpload
+        ? ''
+        : 'Claim this requirement before uploading profiles or taking candidate actions.',
+      assignDisabledMessage: 'Claim this requirement before assigning it to your team members.',
     },
   };
 }
@@ -265,6 +301,7 @@ async function claimRequirement(requirementId, req, bodyUserId) {
 
   requirement.currentClaimedBy = currentClaim;
   requirement.claimStatus = CLAIM_STATUS.CLAIMED;
+  requirement.claimedAt = claimedDate;
   if (!requirement.createdBy) requirement.createdBy = getCreatedBy(requirement);
   await requirement.save();
 
@@ -317,6 +354,9 @@ async function unclaimRequirement(requirementId, req, bodyUserId) {
   requirement.claimStatus = requirement.claimedBy.length
     ? CLAIM_STATUS.CLAIMED
     : CLAIM_STATUS.ASSIGNED;
+  if (!requirement.claimedBy.length) {
+    requirement.claimedAt = undefined;
+  }
   await requirement.save();
 
   return {
@@ -373,6 +413,7 @@ module.exports = {
   canUserEditRequirement,
   canUserClaimRequirement,
   canUserUnclaimRequirement,
+  canUserAssignRequirement,
   canUserUploadToRequirement,
   enrichRequirementWorkflow,
   enrichRequirementsWorkflow,

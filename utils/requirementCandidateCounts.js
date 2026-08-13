@@ -1,4 +1,9 @@
-const { isUploadedCandidate } = require('./candidateStatusMap');
+const {
+  isUploadedCandidate,
+  getLatestStatus,
+  isRejectedStatus,
+  isActiveCandidate,
+} = require('./candidateStatusMap');
 
 function buildRequirementReqIdIndex(requirements = []) {
   const index = new Map();
@@ -46,22 +51,32 @@ function collectUploadedCandidates(relatedDocuments = []) {
 
 function summarizeRequirementCandidates(relatedDocuments = []) {
   const uploadedCandidates = collectUploadedCandidates(relatedDocuments);
+  const rejectedCandidates = uploadedCandidates.filter((candidate) =>
+    isRejectedStatus(getLatestStatus(candidate))
+  );
+  const activeCandidates = uploadedCandidates.filter(isActiveCandidate);
 
-  const noactionCandidates = uploadedCandidates.filter((candidate) =>
+  const noactionCandidates = activeCandidates.filter((candidate) =>
     !candidate.Status
     || candidate.Status.length === 0
     || candidate.Status.every((status) => !status?.Status)
+    || getLatestStatus(candidate) === 'No Action Taken'
   );
 
-  const actionTakenCandidates = uploadedCandidates.filter((candidate) =>
+  const actionTakenCandidates = activeCandidates.filter((candidate) =>
     Array.isArray(candidate.Status)
     && candidate.Status.length > 0
     && candidate.Status.some((status) => status?.Status)
+    && getLatestStatus(candidate) !== 'No Action Taken'
   );
 
   return {
     uploadedCandidates,
     uploadedCandidatesCount: uploadedCandidates.length,
+    rejectedCandidates,
+    rejectedCandidatesCount: rejectedCandidates.length,
+    activeCandidates,
+    activeCandidatesCount: activeCandidates.length,
     noactionCandidates,
     noactionCandidatesCount: noactionCandidates.length,
     actionTakenCandidatesCount: actionTakenCandidates.length,
