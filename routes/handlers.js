@@ -60,6 +60,7 @@ const {
 } = require('../services/requirementWorkflow.service');
 const {
   parseAssignedMemberIds,
+  normalizeAssignedMembers,
   assignRequirementToMembers,
   getAssignableMembers,
 } = require('../services/requirementMemberAssignment.service');
@@ -2248,6 +2249,12 @@ app.put('/editRequirement/:id', jdPdfUpload.single('jdPdf'), async (req, res) =>
             deleteJdFileIfExists(requirement.jdPdf);
             updateData.jdPdf = buildJdPublicPath(req.file);
             updateData.jdPdfOriginalName = req.file.originalname;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(req.body, 'assignedMembers')) {
+            updateData.assignedMembers = normalizeAssignedMembers(updateData.assignedMembers);
+        } else {
+            delete updateData.assignedMembers;
         }
 
         const updatedRequirement = await NewRequirment.findByIdAndUpdate(id, updateData, {

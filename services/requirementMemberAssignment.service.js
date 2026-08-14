@@ -3,6 +3,31 @@ const NewRequirment = require('../models/Requirement');
 const { activeUserFilter, isActiveUser } = require('../utils/userStatus');
 const { sendEmailSafely } = require('../config/mail');
 
+function normalizeAssignedMembers(rawValue) {
+  if (rawValue === undefined || rawValue === null || rawValue === '') {
+    return [];
+  }
+
+  if (Array.isArray(rawValue)) {
+    return rawValue;
+  }
+
+  if (typeof rawValue === 'string') {
+    const trimmed = rawValue.trim();
+    if (!trimmed || trimmed === '[]') {
+      return [];
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      return [];
+    }
+  }
+
+  return [];
+}
+
 function parseAssignedMemberIds(rawValue) {
   if (!rawValue) return [];
 
@@ -90,6 +115,7 @@ function isMemberAssigned(requirement, userId) {
 
 module.exports = {
   parseAssignedMemberIds,
+  normalizeAssignedMembers,
   assignRequirementToMembers,
   getAssignableMembers,
   isMemberAssigned,
