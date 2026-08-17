@@ -153,6 +153,56 @@ function parseInterviewDate(value) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function parseCandidateDate(value) {
+  if (value == null || value === '') return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime()) || parsed.getFullYear() < 1971) return null;
+  return parsed;
+}
+
+function startOfDay(date) {
+  const day = new Date(date);
+  day.setHours(0, 0, 0, 0);
+  return day;
+}
+
+function getCandidateUploadedOn(candidate) {
+  return parseCandidateDate(candidate?.uploadedOn) || parseCandidateDate(candidate?.date);
+}
+
+function isValidStatusActionEntry(entry) {
+  const status = entry?.Status;
+  return Boolean(status && status !== 'No Action Taken');
+}
+
+function getLatestStatusActionDate(candidate) {
+  const statusList = candidate?.Status || [];
+  let latest = null;
+
+  statusList.forEach((entry) => {
+    if (!isValidStatusActionEntry(entry)) return;
+    const actionDate = parseCandidateDate(entry?.Date);
+    if (!actionDate) return;
+    if (!latest || actionDate > latest) latest = actionDate;
+  });
+
+  return latest;
+}
+
+function getNoActionReferenceDate(candidate) {
+  return getLatestStatusActionDate(candidate) || getCandidateUploadedOn(candidate);
+}
+
+function isNoActionTakenCandidate(candidate, now = new Date()) {
+  const referenceDate = getNoActionReferenceDate(candidate);
+  if (!referenceDate) return false;
+
+  const referenceDay = startOfDay(referenceDate);
+  const today = startOfDay(now);
+  const daysSinceReference = Math.floor((today - referenceDay) / (24 * 60 * 60 * 1000));
+  return daysSinceReference >= 2;
+}
+
 module.exports = {
   REJECTED_STATUSES,
   REJECTION_STAGE_LABELS,
@@ -170,4 +220,5 @@ module.exports = {
   isJoinedStatus,
   hasOfferStatus,
   parseInterviewDate,
+  isNoActionTakenCandidate,
 };

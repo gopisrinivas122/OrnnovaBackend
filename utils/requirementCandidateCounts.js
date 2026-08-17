@@ -3,6 +3,7 @@ const {
   getLatestStatus,
   isRejectedStatus,
   isActiveCandidate,
+  isNoActionTakenCandidate,
 } = require('./candidateStatusMap');
 
 function buildRequirementReqIdIndex(requirements = []) {
@@ -56,12 +57,7 @@ function summarizeRequirementCandidates(relatedDocuments = []) {
   );
   const activeCandidates = uploadedCandidates.filter(isActiveCandidate);
 
-  const noactionCandidates = activeCandidates.filter((candidate) =>
-    !candidate.Status
-    || candidate.Status.length === 0
-    || candidate.Status.every((status) => !status?.Status)
-    || getLatestStatus(candidate) === 'No Action Taken'
-  );
+  const noactionCandidates = activeCandidates.filter(isNoActionTakenCandidate);
 
   const actionTakenCandidates = activeCandidates.filter((candidate) =>
     Array.isArray(candidate.Status)
