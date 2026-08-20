@@ -57,7 +57,9 @@ function summarizeRequirementCandidates(relatedDocuments = []) {
   );
   const activeCandidates = uploadedCandidates.filter(isActiveCandidate);
 
-  const noactionCandidates = activeCandidates.filter(isNoActionTakenCandidate);
+  const noactionCandidates = activeCandidates.filter(
+    (candidate) => isNoActionTakenCandidate(candidate)
+  );
 
   const actionTakenCandidates = activeCandidates.filter((candidate) =>
     Array.isArray(candidate.Status)

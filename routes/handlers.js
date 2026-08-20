@@ -2281,7 +2281,7 @@ app.get('/api/requirements/:id/jd', async (req, res) => {
 
         const actorId = req.user?.id || req.query.userId;
         const actor = actorId ? await NewUser.findById(actorId) : null;
-        if (!actor || !(await canUserViewRequirement(actor, requirement))) {
+        if (!actor || !userCanAccessRequirement(actor, requirement)) {
             return res.status(403).json({ message: 'You do not have access to this JD PDF.' });
         }
 
