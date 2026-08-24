@@ -14,6 +14,7 @@ const RequirementSchema = new mongoose.Schema({
   skill: { type: String, required: true },
   role: { type: String },
   requirementtype: { type: String, required: true },
+  priority: { type: Number, min: 1, max: 5, default: null },
   numberOfPositions: { type: Number, default: 1 },
   workMode: { type: String, enum: ['Onsite', 'Hybrid', 'Remote', ''], default: '' },
   hiringManager: { type: String, default: '' },

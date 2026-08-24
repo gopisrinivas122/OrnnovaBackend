@@ -35,6 +35,11 @@ const {
   normalizeRequirementType,
 } = require('../utils/requirementType');
 const {
+  canManageRequirementPriority,
+  isValidRequirementPriority,
+  normalizeRequirementPriority,
+} = require('../utils/requirementPriority');
+const {
   buildRequirementReqIdIndex,
   groupCandidateDocsByRequirement,
   summarizeRequirementCandidates,
@@ -2257,6 +2262,17 @@ app.put('/editRequirement/:id', jdPdfUpload.single('jdPdf'), async (req, res) =>
             delete updateData.assignedMembers;
         }
 
+        if (actor.UserType !== 'Admin') {
+            delete updateData.priority;
+        } else if (Object.prototype.hasOwnProperty.call(updateData, 'priority')) {
+            const normalizedPriority = normalizeRequirementPriority(updateData.priority);
+            if (normalizedPriority === undefined) {
+                if (req.file) deleteJdFileIfExists(buildJdPublicPath(req.file));
+                return res.status(400).json({ message: 'Invalid priority. Allowed: null, 1, 2, 3, 4, 5.' });
+            }
+            updateData.priority = normalizedPriority;
+        }
+
         const updatedRequirement = await NewRequirment.findByIdAndUpdate(id, updateData, {
             new: true,
             runValidators: true,
@@ -2620,6 +2636,44 @@ app.patch('/api/requirements/:id/requirement-type', asyncHandler(async (req, res
     }
 
     res.json({ status: 'Success', msg: 'Requirement type updated.', requirement });
+}));
+
+app.patch('/api/requirements/:id/priority', asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const actorId = req.user?.id;
+
+    if (!actorId) {
+        return res.status(401).json({ status: 'Failed', msg: 'Authentication required.' });
+    }
+
+    const actor = await NewUser.findById(actorId);
+    if (!actor || !canManageRequirementPriority(actor)) {
+        return res.status(403).json({ status: 'Failed', msg: 'You do not have permission to update requirement priority.' });
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(req.body, 'priority')) {
+        return res.status(400).json({ status: 'Error', msg: 'priority is required.' });
+    }
+
+    if (!isValidRequirementPriority(req.body.priority)) {
+        return res.status(400).json({
+            status: 'Error',
+            msg: 'Invalid priority. Allowed: null, 1, 2, 3, 4, 5.',
+        });
+    }
+
+    const normalizedPriority = normalizeRequirementPriority(req.body.priority);
+    const requirement = await NewRequirment.findByIdAndUpdate(
+        id,
+        { priority: normalizedPriority },
+        { new: true, runValidators: true }
+    );
+
+    if (!requirement) {
+        return res.status(404).json({ status: 'Error', msg: 'Requirement not found.' });
+    }
+
+    res.json({ status: 'Success', msg: 'Requirement priority updated.', requirement });
 }));
 
 // Status tracking dashboard (read-only, role-scoped)
