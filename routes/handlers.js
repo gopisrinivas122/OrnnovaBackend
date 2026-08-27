@@ -35,6 +35,12 @@ const {
   normalizeRequirementType,
 } = require('../utils/requirementType');
 const {
+  appendRemarkToStatusEntry,
+  getLatestStatusEntry,
+  serializeCandidateStatusHistory,
+  serializeStatusEntry,
+} = require('../utils/statusRemarks');
+const {
   canManageRequirementPriority,
   isValidRequirementPriority,
   normalizeRequirementPriority,
@@ -1284,6 +1290,11 @@ app.get('/api/requirements/:id/rejected-candidates', async (req, res) => {
     }
 });
 
+function serializeCandidateForResponse(candidate) {
+  if (!candidate) return null;
+  return serializeCandidateStatusHistory(candidate);
+}
+
 // Get the number of candidates added by each recruiter for a specific reqId
 app.get('/api/recruiters/:reqId', async (req, res) => {
     const { reqId } = req.params;
@@ -1315,7 +1326,9 @@ app.get('/api/recruiters/:reqId', async (req, res) => {
                         if (!recruiterIdToCandidates[recruiterId]) {
                             recruiterIdToCandidates[recruiterId] = []; // Initialize array for the first time
                         }
-                        recruiterIdToCandidates[recruiterId].push(candidate);
+                        recruiterIdToCandidates[recruiterId].push(
+                            serializeCandidateForResponse(candidate)
+                        );
                     });
                 });
         });
@@ -1379,7 +1392,9 @@ app.get('/userUploads/:reqId/:userId', async (req, res) => {
                         if (!recruiterIdToCandidates[recruiterId]) {
                             recruiterIdToCandidates[recruiterId] = []; // Initialize array for the first time
                         }
-                        recruiterIdToCandidates[recruiterId].push(candidate);
+                        recruiterIdToCandidates[recruiterId].push(
+                            serializeCandidateForResponse(candidate)
+                        );
                     });
                 });
         });
@@ -1498,7 +1513,7 @@ app.get('/candidate/:id', async (req, res) => {
         }
 
         // Send the candidate data as a response
-        res.json(candidate);
+        res.json(serializeCandidateForResponse(candidate));
     } catch (err) {
         console.error('Error fetching candidate:', err);
         res.status(500).json({ message: 'Internal Server Error' });
@@ -2343,16 +2358,18 @@ app.put('/updatestatus/:candidateId', async (req, res) => {
     }
 
     try {
+        const trimmedRemark = String(remark).trim();
         const updateOps = {
             $push: {
                 'candidates.$.Status': {
                     Status: normalizedStatus,
                     Date: new Date(),
-                    Remark: String(remark).trim(),
+                    Remark: trimmedRemark,
+                    Remarks: [{ text: trimmedRemark, createdAt: new Date() }],
                 },
             },
             $set: {
-                'candidates.$.remark': String(remark).trim(),
+                'candidates.$.remark': trimmedRemark,
             },
         };
 
@@ -2382,12 +2399,74 @@ app.put('/updatestatus/:candidateId', async (req, res) => {
             return res.status(404).json({ message: 'Candidate not found in any main document' });
         }
 
-        res.status(200).json({ message: 'Status updated successfully ✅', mainDocument: updatedMain });
+        const updatedCandidate = updatedMain.candidates.id(candidateId);
+
+        res.status(200).json({
+            message: 'Status updated successfully ✅',
+            candidateId: String(candidateId),
+            status: normalizedStatus,
+            candidate: serializeCandidateForResponse(updatedCandidate),
+            mainDocument: updatedMain,
+        });
     } catch (error) {
         console.error('Error updating status:', error);
         res.status(500).json({ message: 'Server error', error: error.message });
     }
 });
+
+app.post('/api/candidates/:candidateId/status/:statusEntryId/remarks', asyncHandler(async (req, res) => {
+    const { candidateId, statusEntryId } = req.params;
+    const { remark } = req.body;
+
+    if (!isValidObjectId(candidateId) || !isValidObjectId(statusEntryId)) {
+        return res.status(400).json({ message: 'Invalid candidate or status entry id.' });
+    }
+
+    const trimmedRemark = String(remark || '').trim();
+    if (!trimmedRemark) {
+        return res.status(400).json({ message: 'Remark is required.' });
+    }
+
+    const mainDocument = await CandidateModel.findOne({ 'candidates._id': candidateId });
+    if (!mainDocument) {
+        return res.status(404).json({ message: 'Candidate not found.' });
+    }
+
+    const candidate = mainDocument.candidates.id(candidateId);
+    if (!candidate) {
+        return res.status(404).json({ message: 'Candidate not found.' });
+    }
+
+    const statusEntry = candidate.Status.id(statusEntryId);
+    if (!statusEntry) {
+        return res.status(404).json({ message: 'Status history entry not found.' });
+    }
+
+    const latestStatusEntry = getLatestStatusEntry(
+      Array.isArray(candidate.Status) ? candidate.Status : []
+    );
+    if (!latestStatusEntry || String(latestStatusEntry._id) !== String(statusEntryId)) {
+        return res.status(400).json({ message: 'Remarks can only be added to the current status.' });
+    }
+
+    const appendResult = appendRemarkToStatusEntry(statusEntry, trimmedRemark);
+    if (!appendResult.ok) {
+        return res.status(400).json({ message: appendResult.message });
+    }
+
+    await mainDocument.save();
+
+    const updatedCandidate = mainDocument.candidates.id(candidateId);
+    const updatedStatusEntry = updatedCandidate.Status.id(statusEntryId);
+
+    res.status(200).json({
+        message: 'Remark added successfully ✅',
+        candidateId: String(candidateId),
+        statusEntryId: String(statusEntryId),
+        statusEntry: serializeStatusEntry(updatedStatusEntry),
+        candidate: serializeCandidateForResponse(updatedCandidate),
+    });
+}));
 
 // Requirments in Admin 
 app.get('/admingetrequirements', async (req, res) => {

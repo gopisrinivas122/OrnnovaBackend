@@ -29,6 +29,10 @@ const CandidateSchema = new mongoose.Schema({
       Status: { type: String, required: true },
       Date: { type: Date, default: Date.now },
       Remark: { type: String, default: '' },
+      Remarks: [{
+        text: { type: String, required: true },
+        createdAt: { type: Date, default: Date.now },
+      }],
     },
   ],
   savedStatus: { type: String, enum: ['Saved', 'Uploaded'] },
