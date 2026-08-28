@@ -284,7 +284,7 @@ function computeDashboardStats(requirements, rows) {
   };
 }
 
-function computeUpcomingInterviews(rows, reqMap, days = 3) {
+function computeUpcomingInterviews(rows, reqMap, days = 7) {
   const now = new Date();
   now.setHours(0, 0, 0, 0);
   const end = new Date(now);
@@ -378,7 +378,7 @@ async function getAdminAnalytics(filters = {}) {
     generatedAt: new Date().toISOString(),
     dashboardStats: computeDashboardStats(requirements, rows),
     pipelineFunnel: computePipelineFunnel(rows),
-    upcomingInterviews: computeUpcomingInterviews(rows, reqMap, 3),
+    upcomingInterviews: computeUpcomingInterviews(rows, reqMap, 7),
     profilesSourcedReport: computeProfilesSourcedReport(rows, users, reqMap, filters),
   };
 }

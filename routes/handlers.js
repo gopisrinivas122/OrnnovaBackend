@@ -45,6 +45,7 @@ const {
   isValidRequirementPriority,
   normalizeRequirementPriority,
 } = require('../utils/requirementPriority');
+const { getPriorityProfileReminderStatus } = require('../utils/priorityProfileReminder');
 const {
   buildRequirementReqIdIndex,
   groupCandidateDocsByRequirement,
@@ -1128,6 +1129,31 @@ app.get('/candidateCounts/:userId', async (req, res) => {
     }
 });
 
+app.get('/api/priority-profile-reminder/:userId', async (req, res) => {
+    const { userId } = req.params;
+
+    if (!userId) {
+        return res.status(400).json({ error: 'UserID is required' });
+    }
+
+    try {
+        const user = await NewUser.findById(userId);
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        if (!['User', 'TeamLead'].includes(user.UserType)) {
+            return res.json({ shouldRemind: false, missingCount: 0, missingRequirements: [] });
+        }
+
+        const status = await getPriorityProfileReminderStatus(user);
+        res.json(status);
+    } catch (error) {
+        console.error('Priority profile reminder check failed:', error);
+        res.status(500).json({ error: 'Failed to evaluate priority profile reminder' });
+    }
+});
+
 app.get('/viewactions/:id/:userid', async (req, res) => {
     const { id, userid } = req.params;
 
@@ -1153,9 +1179,9 @@ app.get('/viewactions/:id/:userid', async (req, res) => {
                 candidateCount: candidates.length,
                 savedCount: savedCandidates.length,
                 uploadedCount: uploadedCandidates.length,
-                savedCandidates,     // Details of candidates with savedStatus: "Saved"
-                uploadedCandidates ,  // Details of candidates with savedStatus: "Uploaded"
-                candidates
+                savedCandidates: serializeCandidateList(savedCandidates),
+                uploadedCandidates: serializeCandidateList(uploadedCandidates),
+                candidates: serializeCandidateList(candidates),
             });
         } else {
             res.json({ message: 'No candidates found' });
@@ -1293,6 +1319,13 @@ app.get('/api/requirements/:id/rejected-candidates', async (req, res) => {
 function serializeCandidateForResponse(candidate) {
   if (!candidate) return null;
   return serializeCandidateStatusHistory(candidate);
+}
+
+function serializeCandidateList(candidates = []) {
+  if (!Array.isArray(candidates)) return [];
+  return candidates
+    .map((candidate) => serializeCandidateForResponse(candidate))
+    .filter(Boolean);
 }
 
 // Get the number of candidates added by each recruiter for a specific reqId
@@ -1946,9 +1979,13 @@ app.get('/getTeamRequirementsCount/:userId', async (req, res) => {
             status: "Success",
             totalCandidates: totalCandidatesCount,
             todaysCandidates: todaysCandidatesCount,
-            totalCandidatesData,       // Array of all candidates
-            todaysCandidatesData,      // Array of today's candidates
-            recruiterStats             // Array with stats for each recruiter, including their details
+            totalCandidatesData: serializeCandidateList(totalCandidatesData),
+            todaysCandidatesData: serializeCandidateList(todaysCandidatesData),
+            recruiterStats: recruiterStats.map((item) => ({
+                ...item,
+                totalCandidatesData: serializeCandidateList(item.totalCandidatesData),
+                todaysCandidatesData: serializeCandidateList(item.todaysCandidatesData),
+            })),
         });
 
     } catch (err) {
@@ -2182,15 +2219,15 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
                     todayCandidateCount: todayCandidateCount,
                     userCandidatesCount: userCandidates.length,
                     teamCandidatesCount: teamCandidates.length,
-                    userActiveCandidatesDetails: userCandidates,
-                    todayUserCandidates: todayUserCandidates,
-                    todayTeamCandidates: todayTeamCandidates, // Only "Uploaded" team candidates for today
-                    totalUserCandidatesDetails: totalUserCandidatesDetails, // Both "Saved" and "Uploaded" user candidates
-                    totalUserCandidatesCount: totalUserCandidatesCount, // Count of both "Saved" and "Uploaded" user candidates
-                    totalTeamCandidatesDetails: teamCandidates, // Only "Uploaded" team candidates
-                    totalCandidatesDetails: totalCandidatesDetails, // All "Uploaded" candidates (user + team)
+                    userActiveCandidatesDetails: serializeCandidateList(userCandidates),
+                    todayUserCandidates: serializeCandidateList(todayUserCandidates),
+                    todayTeamCandidates: serializeCandidateList(todayTeamCandidates),
+                    totalUserCandidatesDetails: serializeCandidateList(totalUserCandidatesDetails),
+                    totalUserCandidatesCount: totalUserCandidatesCount,
+                    totalTeamCandidatesDetails: serializeCandidateList(teamCandidates),
+                    totalCandidatesDetails: serializeCandidateList(totalCandidatesDetails),
                     rejectedCandidatesCount,
-                    combinedTodayCandidates: combinedTodayCandidates // Combined today "Uploaded" candidates (user + team)
+                    combinedTodayCandidates: serializeCandidateList(combinedTodayCandidates),
                 };
             })
         );
