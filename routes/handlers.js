@@ -2373,7 +2373,7 @@ app.get('/api/requirements/:id/jd', async (req, res) => {
 app.put('/updatestatus/:candidateId', async (req, res) => {
     const candidateId = req.params.candidateId;
     const { status, interviewDate, interviewTime, remark, updatedBy } = req.body;
-    const INTERVIEW_SCHEDULE_STATUSES = ['L1 Schedule', 'L2 Schedule', 'L1 Pending', 'L2 Pending'];
+    const INTERVIEW_SCHEDULE_STATUSES = ['L1 Schedule', 'L2 Schedule', 'L3 Schedule', 'L1 Pending', 'L2 Pending'];
     const normalizedStatus = status === 'L1 Pending'
         ? 'L1 Schedule'
         : status === 'L2 Pending'
@@ -2641,12 +2641,14 @@ app.get('/remainingusers/:id', async (req, res) => {
 
 // Phase 1 — Admin analytics (read-only)
 app.get('/api/admin/analytics', asyncHandler(async (req, res) => {
-    const { from, to, recruiterId, teamLeadId } = req.query;
+    const { from, to, recruiterId, teamLeadId, statsFrom, statsTo } = req.query;
     const data = await getAdminAnalytics({
         fromDate: from || '',
         toDate: to || '',
         recruiterId: recruiterId || '',
         teamLeadId: teamLeadId || '',
+        statsFromDate: statsFrom || '',
+        statsToDate: statsTo || '',
     });
     res.json(data);
 }));

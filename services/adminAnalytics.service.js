@@ -59,11 +59,33 @@ function resolveRecruiterName(row, userMap) {
   return 'Unknown';
 }
 
-function isUploadedOnInRange(uploadedOn, fromDate, toDate) {
-  if (!fromDate && !toDate) return true;
-  if (!uploadedOn) return false;
+function getMonthStartDateInputValue(referenceDate = new Date()) {
+  const date = new Date(referenceDate);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}-01`;
+}
 
-  const date = new Date(uploadedOn);
+function getTodayDateInputValue(referenceDate = new Date()) {
+  const date = new Date(referenceDate);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getDefaultCardStatsDateRange(referenceDate = new Date()) {
+  return {
+    fromDate: getMonthStartDateInputValue(referenceDate),
+    toDate: getTodayDateInputValue(referenceDate),
+  };
+}
+
+function isDateInRange(value, fromDate, toDate) {
+  if (!fromDate && !toDate) return true;
+  if (!value) return false;
+
+  const date = new Date(value);
   if (Number.isNaN(date.getTime())) return false;
 
   if (fromDate) {
@@ -79,6 +101,10 @@ function isUploadedOnInRange(uploadedOn, fromDate, toDate) {
   }
 
   return true;
+}
+
+function isUploadedOnInRange(uploadedOn, fromDate, toDate) {
+  return isDateInRange(uploadedOn, fromDate, toDate);
 }
 
 function resolveUploaderIds(row) {
@@ -225,9 +251,13 @@ function computeProfilesSourcedReport(rows, users, reqMap, filters = {}) {
   };
 }
 
-function computePipelineFunnel(rows) {
+function computePipelineFunnel(rows, { fromDate = '', toDate = '' } = {}) {
+  const scopedRows = (fromDate || toDate)
+    ? rows.filter((row) => isUploadedOnInRange(row.candidate.uploadedOn, fromDate, toDate))
+    : rows;
+
   return FUNNEL_STAGES.map((stage) => {
-    const count = rows.filter((row) => {
+    const count = scopedRows.filter((row) => {
       const status = getLatestStatus(row.candidate);
       if (isRejectedStatus(status)) return false;
       return hasReachedStage(status, stage.minRank);
@@ -237,33 +267,41 @@ function computePipelineFunnel(rows) {
   });
 }
 
-function computeDashboardStats(requirements, rows) {
-  const openRequirements = requirements.filter((req) => {
+function computeDashboardStats(requirements, rows, { fromDate = '', toDate = '' } = {}) {
+  const scopedRequirements = (fromDate || toDate)
+    ? requirements.filter((req) => isDateInRange(req.startDate, fromDate, toDate))
+    : requirements;
+
+  const scopedRows = (fromDate || toDate)
+    ? rows.filter((row) => isUploadedOnInRange(row.candidate.uploadedOn, fromDate, toDate))
+    : rows;
+
+  const openRequirements = scopedRequirements.filter((req) => {
     const normalized = normalizeRequirementType(req.requirementtype);
     return normalized && !isRequirementWorkBlocked(normalized);
   });
 
-  const onHold = requirements.filter(
+  const onHold = scopedRequirements.filter(
     (req) => normalizeRequirementType(req.requirementtype) === 'Hold'
   ).length;
 
   let interviews = 0;
   let offers = 0;
   let offerAccept = 0;
+  let joined = 0;
   let joinings = 0;
   let rejections = 0;
 
-  rows.forEach((row) => {
+  scopedRows.forEach((row) => {
     const status = getLatestStatus(row.candidate);
     if (isRejectedStatus(status)) {
       rejections += 1;
       return;
     }
     if (hasReachedStage(status, 5)) interviews += 1;
-    if (hasOfferStatus(status, row.candidate)) offers += 1;
-    if (getLatestStatus(row.candidate) === 'Onboard Confirmation' || String(row.candidate.offerInHand || '').toLowerCase() === 'yes') {
-      offerAccept += 1;
-    }
+    if (status === 'Offer Released') offers += 1;
+    if (status === 'Offer Accepted') offerAccept += 1;
+    if (status === 'Joined') joined += 1;
     if (isJoinedStatus(status)) joinings += 1;
   });
 
@@ -273,9 +311,10 @@ function computeDashboardStats(requirements, rows) {
   return {
     openRequirements: openRequirements.length,
     positions,
-    profiles: rows.length,
+    profiles: scopedRows.length,
     interviews,
     joinings,
+    joined,
     offers,
     offerAccept,
     rejections,
@@ -302,6 +341,7 @@ function computeUpcomingInterviews(rows, reqMap, days = 7) {
       const status = getLatestStatus(row.candidate) || 'No Action Taken';
 
       return {
+        candidateId: row.candidate._id?.toString(),
         candidateName: name || '—',
         client: req?.client || '—',
         role: row.candidate.role || req?.role || '—',
@@ -362,7 +402,83 @@ function computeRequirementFunnel(requirementId, requirements, rows, userMap = n
   };
 }
 
+function formatRequirementDrillDownRow(req) {
+  return {
+    requirementId: req._id?.toString(),
+    regId: req.regId || '—',
+    client: req.client || '—',
+    role: req.role || '—',
+    startDate: req.startDate || null,
+    requirementType: normalizeRequirementType(req.requirementtype) || '—',
+  };
+}
+
+function formatCandidateDrillDownRow(row, reqMap) {
+  const req = reqMap.get(row.reqId);
+  const name = `${row.candidate.firstName || ''} ${row.candidate.lastName || ''}`.trim();
+
+  return {
+    candidateId: row.candidate._id?.toString(),
+    candidateName: name || '—',
+    client: req?.client || '—',
+    role: row.candidate.role || req?.role || '—',
+    regId: req?.regId || row.reqId,
+    requirementId: row.reqId,
+    status: getLatestStatus(row.candidate) || 'No Action Taken',
+    uploadedOn: row.candidate.uploadedOn || null,
+  };
+}
+
+function buildDashboardDrillDown(requirements, rows, reqMap, { fromDate = '', toDate = '' } = {}) {
+  const scopedRequirements = (fromDate || toDate)
+    ? requirements.filter((req) => isDateInRange(req.startDate, fromDate, toDate))
+    : requirements;
+
+  const scopedRows = (fromDate || toDate)
+    ? rows.filter((row) => isUploadedOnInRange(row.candidate.uploadedOn, fromDate, toDate))
+    : rows;
+
+  const openRequirements = scopedRequirements
+    .filter((req) => {
+      const normalized = normalizeRequirementType(req.requirementtype);
+      return normalized && !isRequirementWorkBlocked(normalized);
+    })
+    .map((req) => formatRequirementDrillDownRow(req));
+
+  const onHoldRequirements = scopedRequirements
+    .filter((req) => normalizeRequirementType(req.requirementtype) === 'Hold')
+    .map((req) => formatRequirementDrillDownRow(req));
+
+  const profiles = scopedRows.map((row) => formatCandidateDrillDownRow(row, reqMap));
+
+  const offers = scopedRows
+    .filter((row) => getLatestStatus(row.candidate) === 'Offer Released')
+    .map((row) => formatCandidateDrillDownRow(row, reqMap));
+
+  const offerAccepted = scopedRows
+    .filter((row) => getLatestStatus(row.candidate) === 'Offer Accepted')
+    .map((row) => formatCandidateDrillDownRow(row, reqMap));
+
+  const joined = scopedRows
+    .filter((row) => getLatestStatus(row.candidate) === 'Joined')
+    .map((row) => formatCandidateDrillDownRow(row, reqMap));
+
+  return {
+    openRequirements,
+    onHoldRequirements,
+    profiles,
+    offers,
+    offerAccepted,
+    joined,
+  };
+}
+
 async function getAdminAnalytics(filters = {}) {
+  const cardStatsRange = {
+    fromDate: filters.statsFromDate || filters.cardsFromDate || getDefaultCardStatsDateRange().fromDate,
+    toDate: filters.statsToDate || filters.cardsToDate || getDefaultCardStatsDateRange().toDate,
+  };
+
   const [requirements, users, candidateDocs] = await Promise.all([
     NewRequirment.find().lean(),
     NewUser.find({ UserType: { $in: ['User', 'TeamLead'] } }).lean(),
@@ -371,14 +487,19 @@ async function getAdminAnalytics(filters = {}) {
 
   const rows = flattenUploadedCandidates(candidateDocs);
   const reqMap = buildRequirementMap(requirements);
-  const userMap = buildUserMap(users);
+  const upcomingInterviews = computeUpcomingInterviews(rows, reqMap, 7);
+  const dashboardStats = computeDashboardStats(requirements, rows, cardStatsRange);
+  dashboardStats.interviews = upcomingInterviews.length;
 
   return {
     status: 'Success',
     generatedAt: new Date().toISOString(),
-    dashboardStats: computeDashboardStats(requirements, rows),
-    pipelineFunnel: computePipelineFunnel(rows),
-    upcomingInterviews: computeUpcomingInterviews(rows, reqMap, 7),
+    dashboardStats,
+    dashboardStatsPeriod: cardStatsRange,
+    dashboardDrillDown: buildDashboardDrillDown(requirements, rows, reqMap, cardStatsRange),
+    pipelineFunnel: computePipelineFunnel(rows, cardStatsRange),
+    pipelineFunnelPeriod: cardStatsRange,
+    upcomingInterviews,
     profilesSourcedReport: computeProfilesSourcedReport(rows, users, reqMap, filters),
   };
 }
