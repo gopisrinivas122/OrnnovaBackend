@@ -32,6 +32,7 @@ const {
   REQUIREMENT_TYPE_OPTIONS,
   isValidRequirementType,
   isRequirementWorkBlocked,
+  getUploadedDateOnReopen,
   normalizeRequirementType,
 } = require('../utils/requirementType');
 const {
@@ -47,11 +48,13 @@ const {
 } = require('../utils/requirementPriority');
 const { getPriorityProfileReminderStatus } = require('../utils/priorityProfileReminder');
 const {
-  buildRequirementReqIdIndex,
-  groupCandidateDocsByRequirement,
   summarizeRequirementCandidates,
   buildCandidateReqIdValues,
 } = require('../utils/requirementCandidateCounts');
+const {
+  getRequirementCreatorId,
+  buildCreatorInfoMap,
+} = require('../utils/requirementCreator');
 const { importRequirements } = require('../services/requirementImport.service');
 const { importClients } = require('../services/clientImport.service');
 const { hashPassword } = require('../utils/password');
@@ -2325,6 +2328,17 @@ app.put('/editRequirement/:id', jdPdfUpload.single('jdPdf'), async (req, res) =>
             updateData.priority = normalizedPriority;
         }
 
+        const nextRequirementType = updateData.requirementtype ?? updateData.requirmentType;
+        if (nextRequirementType !== undefined) {
+            const normalizedType = normalizeRequirementType(nextRequirementType);
+            updateData.requirementtype = normalizedType;
+            delete updateData.requirmentType;
+            const reopenedUploadedDate = getUploadedDateOnReopen(requirement.requirementtype, normalizedType);
+            if (reopenedUploadedDate) {
+                updateData.uploadedDate = reopenedUploadedDate;
+            }
+        }
+
         const updatedRequirement = await NewRequirment.findByIdAndUpdate(id, updateData, {
             new: true,
             runValidators: true,
@@ -2514,8 +2528,7 @@ app.get('/admingetrequirements', async (req, res) => {
             CandidateModel.find(),
         ]);
 
-        const reqIdIndex = buildRequirementReqIdIndex(requirements);
-        const candidatesByReqId = groupCandidateDocsByRequirement(allCandidateDocs, reqIdIndex);
+        const creatorInfoMap = buildCreatorInfoMap(allUsers);
 
         const enrichedRequirements = requirements.map((requirement) => {
             const clientId = requirement.clientId;
@@ -2526,11 +2539,19 @@ app.get('/admingetrequirements', async (req, res) => {
                 (user.Requirements || []).some((id) => id.toString() === reqId)
             );
 
-            const relatedDocuments = candidatesByReqId[reqId] || [];
+            const reqIdValues = buildCandidateReqIdValues(reqId, requirement);
+            const relatedDocuments = allCandidateDocs.filter((doc) =>
+                reqIdValues.includes(String(doc?.reqId || '').trim())
+            );
             const candidateSummary = summarizeRequirementCandidates(relatedDocuments);
+            const creatorId = getRequirementCreatorId(requirement);
+            const creatorInfo = creatorInfoMap[creatorId] || { name: '—', userType: '' };
 
             return {
                 ...requirement.toObject(),
+                creatorName: creatorInfo.name,
+                creatorUserType: creatorInfo.userType,
+                requirementSource: creatorInfo.name,
                 userCount: users.length,
                 userDetails: users,
                 uploadedCandidates: candidateSummary.uploadedCandidates,
@@ -2743,15 +2764,23 @@ app.patch('/api/requirements/:id/requirement-type', asyncHandler(async (req, res
         });
     }
 
-    const requirement = await NewRequirment.findByIdAndUpdate(
-        id,
-        { requirementtype: normalizeRequirementType(requirementtype) },
-        { new: true, runValidators: true }
-    );
-
-    if (!requirement) {
+    const existing = await NewRequirment.findById(id);
+    if (!existing) {
         return res.status(404).json({ status: 'Error', msg: 'Requirement not found.' });
     }
+
+    const nextType = normalizeRequirementType(requirementtype);
+    const update = { requirementtype: nextType };
+    const reopenedUploadedDate = getUploadedDateOnReopen(existing.requirementtype, nextType);
+    if (reopenedUploadedDate) {
+        update.uploadedDate = reopenedUploadedDate;
+    }
+
+    const requirement = await NewRequirment.findByIdAndUpdate(
+        id,
+        update,
+        { new: true, runValidators: true }
+    );
 
     res.json({ status: 'Success', msg: 'Requirement type updated.', requirement });
 }));
@@ -2910,7 +2939,7 @@ app.patch('/api/requirements/:id/hold', asyncHandler(async (req, res) => {
     const { id } = req.params;
     const requirement = await NewRequirment.findByIdAndUpdate(
         id,
-        { requirementtype: 'Hold' },
+        { requirementtype: 'On-Hold-Internal' },
         { new: true, runValidators: true }
     );
     if (!requirement) {

@@ -16,6 +16,13 @@ const {
   normalizeRequirementType,
 } = require('../utils/requirementType');
 
+function getActiveOpenRequirements(requirements = []) {
+  return requirements.filter((req) => {
+    const normalized = normalizeRequirementType(req.requirementtype);
+    return normalized && !isRequirementWorkBlocked(normalized);
+  });
+}
+
 function flattenUploadedCandidates(candidateDocs = []) {
   const rows = [];
 
@@ -276,10 +283,7 @@ function computeDashboardStats(requirements, rows, { fromDate = '', toDate = '' 
     ? rows.filter((row) => isUploadedOnInRange(row.candidate.uploadedOn, fromDate, toDate))
     : rows;
 
-  const openRequirements = scopedRequirements.filter((req) => {
-    const normalized = normalizeRequirementType(req.requirementtype);
-    return normalized && !isRequirementWorkBlocked(normalized);
-  });
+  const openRequirementsList = getActiveOpenRequirements(requirements);
 
   const onHold = scopedRequirements.filter(
     (req) => normalizeRequirementType(req.requirementtype) === 'Hold'
@@ -305,11 +309,11 @@ function computeDashboardStats(requirements, rows, { fromDate = '', toDate = '' 
     if (isJoinedStatus(status)) joinings += 1;
   });
 
-  const positions = openRequirements.reduce((sum, req) => sum + (req.numberOfPositions || 1), 0);
+  const positions = openRequirementsList.reduce((sum, req) => sum + (req.numberOfPositions || 1), 0);
   const closurePercent = positions > 0 ? Math.round((joinings / positions) * 100) : 0;
 
   return {
-    openRequirements: openRequirements.length,
+    openRequirements: openRequirementsList.length,
     positions,
     profiles: scopedRows.length,
     interviews,
@@ -438,11 +442,7 @@ function buildDashboardDrillDown(requirements, rows, reqMap, { fromDate = '', to
     ? rows.filter((row) => isUploadedOnInRange(row.candidate.uploadedOn, fromDate, toDate))
     : rows;
 
-  const openRequirements = scopedRequirements
-    .filter((req) => {
-      const normalized = normalizeRequirementType(req.requirementtype);
-      return normalized && !isRequirementWorkBlocked(normalized);
-    })
+  const openRequirements = getActiveOpenRequirements(requirements)
     .map((req) => formatRequirementDrillDownRow(req));
 
   const onHoldRequirements = scopedRequirements

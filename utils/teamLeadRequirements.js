@@ -3,6 +3,10 @@ const NewClient = require('../models/Client');
 const NewUser = require('../models/User');
 const { activeUserFilter } = require('./userStatus');
 const { isValidObjectId } = require('../middleware/validateObjectId');
+const {
+  attachCreatorInfo,
+  buildCreatorInfoMapForRequirements,
+} = require('./requirementCreator');
 
 const SOURCE_LABELS = {
   TL_CREATED: 'TL Created',
@@ -122,25 +126,9 @@ async function getRequirementsForTeamLead(user, { lean = false, withSource = fal
 
   if (!withSource) return unique;
 
-  const uploaderTypeMap = await buildUploaderTypeMap(unique);
-  const sourceContext = {
-    userId,
-    clientIdStrings: [],
-    clientNames: [],
-    directRequirementIds: assignedIds,
-    uploaderTypeMap,
-  };
+  const creatorInfoMap = await buildCreatorInfoMapForRequirements(unique);
 
-  return unique.map((requirement) => {
-    const plainRequirement = requirement?.toObject ? requirement.toObject() : { ...requirement };
-    const source = classifyRequirementSource(plainRequirement, sourceContext);
-    return {
-      ...plainRequirement,
-      requirementSource: plainRequirement.uploadedBy === userId
-        ? SOURCE_LABELS.TL_CREATED
-        : source,
-    };
-  });
+  return unique.map((requirement) => attachCreatorInfo(requirement, creatorInfoMap));
 }
 
 async function attachRequirementToTeamLead(userId, requirementId) {
