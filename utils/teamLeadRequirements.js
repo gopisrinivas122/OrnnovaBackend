@@ -108,6 +108,52 @@ async function getAdminUploaderIds() {
   return admins.map((admin) => admin._id.toString());
 }
 
+function getExcludedRequirementIdSet(user) {
+  return new Set((user?.excludedRequirements || []).map((id) => id.toString()));
+}
+
+function isRequirementExcludedForUser(user, requirementId) {
+  if (!user || !requirementId) return false;
+  return getExcludedRequirementIdSet(user).has(requirementId.toString());
+}
+
+function filterExcludedRequirementsForUser(user, requirements = []) {
+  const excluded = getExcludedRequirementIdSet(user);
+  if (!excluded.size) return requirements;
+  return requirements.filter((req) => !excluded.has(req._id.toString()));
+}
+
+async function excludeRequirementFromTeamLead(userId, requirementId) {
+  if (!userId || !requirementId) return null;
+
+  const user = await NewUser.findById(userId);
+  if (!user || user.UserType !== 'TeamLead') return null;
+
+  const reqIdStr = requirementId.toString();
+  user.Requirements = (user.Requirements || []).filter((id) => id.toString() !== reqIdStr);
+
+  if (!isRequirementExcludedForUser(user, requirementId)) {
+    user.excludedRequirements = user.excludedRequirements || [];
+    user.excludedRequirements.push(requirementId);
+  }
+
+  await user.save();
+  return user;
+}
+
+async function restoreRequirementForTeamLead(userId, requirementId) {
+  if (!userId || !requirementId) return;
+
+  const user = await NewUser.findById(userId);
+  if (!user) return;
+
+  const reqIdStr = requirementId.toString();
+  user.excludedRequirements = (user.excludedRequirements || []).filter(
+    (id) => id.toString() !== reqIdStr
+  );
+  await user.save();
+}
+
 async function getRequirementsForTeamLead(user, { lean = false, withSource = false } = {}) {
   if (!user) return [];
 
@@ -124,11 +170,13 @@ async function getRequirementsForTeamLead(user, { lean = false, withSource = fal
   const results = await query.exec();
   const unique = uniqueRequirements(results);
 
-  if (!withSource) return unique;
+  const visible = filterExcludedRequirementsForUser(user, unique);
 
-  const creatorInfoMap = await buildCreatorInfoMapForRequirements(unique);
+  if (!withSource) return visible;
 
-  return unique.map((requirement) => attachCreatorInfo(requirement, creatorInfoMap));
+  const creatorInfoMap = await buildCreatorInfoMapForRequirements(visible);
+
+  return visible.map((requirement) => attachCreatorInfo(requirement, creatorInfoMap));
 }
 
 async function attachRequirementToTeamLead(userId, requirementId) {
@@ -138,6 +186,8 @@ async function attachRequirementToTeamLead(userId, requirementId) {
   if (!user || user.UserType !== 'TeamLead') return;
 
   const reqIdStr = requirementId.toString();
+  if (isRequirementExcludedForUser(user, requirementId)) return;
+
   const alreadyLinked = (user.Requirements || []).some((id) => id.toString() === reqIdStr);
   if (alreadyLinked) return;
 
@@ -179,6 +229,7 @@ async function userCanAccessRequirement(user, requirement) {
   if (user.UserType === 'Admin') return true;
 
   if (user.UserType === 'TeamLead') {
+    if (isRequirementExcludedForUser(user, requirementId)) return false;
     return String(requirement.uploadedBy || requirement.createdBy || '') === userId
       || (user.Requirements || []).some((id) => id.toString() === requirementId);
   }
@@ -196,4 +247,9 @@ module.exports = {
   attachRequirementToTeamLead,
   linkRequirementToMatchingTeamLeads,
   matchesAssignedClient,
+  isRequirementExcludedForUser,
+  getExcludedRequirementIdSet,
+  filterExcludedRequirementsForUser,
+  excludeRequirementFromTeamLead,
+  restoreRequirementForTeamLead,
 };

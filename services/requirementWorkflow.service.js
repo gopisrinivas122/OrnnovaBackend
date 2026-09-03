@@ -2,6 +2,11 @@ const NewUser = require('../models/User');
 const NewRequirment = require('../models/Requirement');
 const CandidateModel = require('../models/Candidate');
 const { isActiveUser } = require('../utils/userStatus');
+const { isRequirementExcludedForUser } = require('../utils/teamLeadRequirements');
+const {
+  attachCreatorInfo,
+  buildCreatorInfoMapForRequirements,
+} = require('../utils/requirementCreator');
 
 const CLAIM_STATUS = {
   ASSIGNED: 'Assigned',
@@ -124,6 +129,7 @@ async function canUserViewRequirement(user, requirement) {
   if (user.UserType === 'Admin') return true;
 
   if (user.UserType === 'TeamLead') {
+    if (isRequirementExcludedForUser(user, reqId)) return false;
     return getCreatedBy(requirement) === userId || isUserAssignedToRequirement(user, reqId);
   }
 
@@ -261,9 +267,14 @@ async function enrichRequirementWorkflow(requirement, user, options = {}) {
 }
 
 async function enrichRequirementsWorkflow(requirements, user) {
-  return Promise.all(
+  const enriched = await Promise.all(
     (requirements || []).map((req) => enrichRequirementWorkflow(req, user))
   );
+
+  if (!enriched.length) return enriched;
+
+  const creatorInfoMap = await buildCreatorInfoMapForRequirements(enriched);
+  return enriched.map((req) => attachCreatorInfo(req, creatorInfoMap));
 }
 
 async function claimRequirement(requirementId, req, bodyUserId) {

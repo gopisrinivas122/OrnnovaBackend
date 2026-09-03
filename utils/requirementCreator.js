@@ -21,6 +21,7 @@ async function buildCreatorInfoMapForRequirements(requirements = []) {
   const creatorIds = [...new Set(
     requirements
       .map((requirement) => getRequirementCreatorId(requirement))
+      .map((id) => String(id || '').trim())
       .filter((id) => id && isValidObjectId(id))
   )];
 
@@ -34,11 +35,13 @@ async function buildCreatorInfoMapForRequirements(requirements = []) {
 }
 
 function attachCreatorInfo(requirement = {}, creatorInfoMap = {}) {
-  const creatorId = getRequirementCreatorId(requirement);
+  const source = requirement?.toObject ? requirement.toObject() : { ...requirement };
+  const creatorId = getRequirementCreatorId(source);
   const creatorInfo = creatorInfoMap[creatorId] || { name: '—', userType: '' };
 
   return {
-    ...(requirement?.toObject ? requirement.toObject() : { ...requirement }),
+    ...source,
+    createdBy: creatorId || source.createdBy || source.uploadedBy || '',
     creatorName: creatorInfo.name,
     creatorUserType: creatorInfo.userType,
     requirementSource: creatorInfo.name,

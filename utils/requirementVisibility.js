@@ -1,5 +1,8 @@
 const NewRequirment = require('../models/Requirement');
 const { getCreatedBy } = require('../services/requirementWorkflow.service');
+const {
+  filterExcludedRequirementsForUser,
+} = require('./teamLeadRequirements');
 
 async function getVisibleRequirementsForTeamLead(user, options = {}) {
   if (!user) return [];
@@ -14,7 +17,8 @@ async function getVisibleRequirementsForTeamLead(user, options = {}) {
 
   const query = NewRequirment.find({ $or: orConditions });
   if (options.lean) query.lean();
-  return query.exec();
+  const results = await query.exec();
+  return filterExcludedRequirementsForUser(user, results);
 }
 
 async function getVisibleRequirementsForRecruiter(user, options = {}) {

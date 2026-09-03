@@ -6,6 +6,7 @@ const {
   buildRequirementMap,
 } = require('./adminAnalytics.service');
 const { getLatestStatus, isRejectedStatus } = require('../utils/candidateStatusMap');
+const { getExcludedRequirementIdSet } = require('../utils/teamLeadRequirements');
 const {
   matchesStage,
   getStageByKey,
@@ -48,9 +49,11 @@ function buildViewerScope(viewer, requirements = [], filters = {}) {
         recruiterIds = new Set([tl._id.toString(), ...(tl.Team || []).map(String)]);
         const clientIds = new Set((tl.Clients || []).map(String));
         const assignedReqIds = new Set((tl.Requirements || []).map(String));
+        const excludedReqIds = getExcludedRequirementIdSet(tl);
         requirementIds = new Set();
         requirements.forEach((req) => {
           const reqId = req._id.toString();
+          if (excludedReqIds.has(reqId)) return;
           if (clientIds.has(String(req.clientId)) || assignedReqIds.has(reqId)) {
             requirementIds.add(reqId);
           }
@@ -64,9 +67,11 @@ function buildViewerScope(viewer, requirements = [], filters = {}) {
   } else if (viewer.UserType === 'TeamLead') {
     const clientIds = new Set((viewer.Clients || []).map(String));
     const assignedReqIds = new Set((viewer.Requirements || []).map(String));
+    const excludedReqIds = getExcludedRequirementIdSet(viewer);
     recruiterIds = new Set([viewer._id.toString(), ...(viewer.Team || []).map(String)]);
     requirements.forEach((req) => {
       const reqId = req._id.toString();
+      if (excludedReqIds.has(reqId)) return;
       if (clientIds.has(String(req.clientId)) || assignedReqIds.has(reqId)) {
         requirementIds.add(reqId);
       }

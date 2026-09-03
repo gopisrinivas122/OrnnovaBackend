@@ -27,6 +27,7 @@ const {
   userCanAccessRequirement,
   attachRequirementToTeamLead,
   linkRequirementToMatchingTeamLeads,
+  excludeRequirementFromTeamLead,
 } = require('../utils/teamLeadRequirements');
 const {
   REQUIREMENT_TYPE_OPTIONS,
@@ -1767,6 +1768,9 @@ app.post('/assignReq/:userId/:requirementId', async (req, res) => {
             return res.json({ status: 'error', msg: 'Requirement already assigned to this user 😊' });
         }
 
+        user.excludedRequirements = (user.excludedRequirements || []).filter(
+            (id) => id.toString() !== requirementId.toString()
+        );
         user.Requirements.push(requirementId);
         await user.save();
 
@@ -1841,8 +1845,31 @@ app.post('/unassignReq/:userId/:requirementId', async (req, res) => {
             return res.status(404).json({ status: 'error', msg: 'User not found.' });
         }
 
+        const actor = req.user?.id ? await NewUser.findById(req.user.id) : null;
+        const reqIdStr = requirementId.toString();
+
+        if (user.UserType === 'TeamLead') {
+            if (actor?.UserType !== 'Admin') {
+                return res.status(403).json({
+                    status: 'error',
+                    msg: 'Only Admin can unassign requirements from Team Leads.',
+                });
+            }
+
+            await excludeRequirementFromTeamLead(userId, requirementId);
+
+            await NewRequirment.updateOne(
+                { _id: requirementId },
+                { $pull: { claimedBy: { userId } } }
+            );
+
+            return res.json({ status: 'success', msg: 'Requirement unassigned from Team Lead successfully ✅' });
+        }
+
         // Check if the user is assigned to this requirement
-        const requirementAssigned = user.Requirements.includes(requirementId);
+        const requirementAssigned = (user.Requirements || []).some(
+            (reqId) => reqId.toString() === reqIdStr
+        );
         if (!requirementAssigned) {
             return res.status(400).json({
                 status: 'error',
@@ -2215,7 +2242,9 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
 
                 return {
                     requirementDetails: enrichedRequirement,
-                    requirementSource: requirement.requirementSource || 'Assigned',
+                    creatorName: requirement.creatorName,
+                    creatorUserType: requirement.creatorUserType,
+                    requirementSource: requirement.creatorName || requirement.requirementSource || '—',
                     userCount: userCountForThisRequirement,
                     assignedUsernames: usernamesForThisRequirement,
                     totalCandidateCount: totalCandidateCount,
@@ -2535,7 +2564,6 @@ app.get('/admingetrequirements', async (req, res) => {
             const reqId = requirement._id.toString();
 
             const users = allUsers.filter((user) =>
-                (user.Clients || []).some((id) => id.toString() === clientId?.toString()) ||
                 (user.Requirements || []).some((id) => id.toString() === reqId)
             );
 
@@ -2583,25 +2611,19 @@ app.get('/admingetrequirements/:id', async (req, res) => {
             return res.status(404).json({ status: "Error", msg: "Requirement not found" });
         }
 
-        // Get the clientId from the requirement
-        const clientId = requirement.clientId;
-        const reqId = requirement._id; // Assuming this is the reqId
+        const reqId = requirement._id;
 
-        // Find users associated with the clientId or reqId, and with UserType 'User' or 'TeamLead'
+        // Assigned users = users directly assigned to this requirement
         const users = await NewUser.find({
-            UserType: { $in: ['User', 'TeamLead'] }, // Filter for UserType first
-            $or: [
-                { Clients: clientId },   // Clients matching clientId
-                { Requirements: reqId }   // Requirements matching reqId
-            ]
+            UserType: { $in: ['User', 'TeamLead'] },
+            Requirements: reqId,
         });
 
-        // Map user details for the filtered users
         const userDetails = users.map(user => ({
             _id: user._id,
             name: user.EmployeeName,
             email: user.Email,
-            userType: user.UserType
+            userType: user.UserType,
         }));
 
         // Create an enriched response with requirement details and user data

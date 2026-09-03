@@ -14,6 +14,7 @@ const userSchema = new mongoose.Schema({
   Team: [{ type: String }],
   Clients: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Client' }],
   Requirements: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Requirements' }],
+  excludedRequirements: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Requirements' }],
   claimedRequirements: [{ type: mongoose.Schema.Types.ObjectId, ref: 'NewRequirement' }],
 });
 
@@ -21,6 +22,7 @@ userSchema.index({ Email: 1 });
 userSchema.index({ UserType: 1, Status: 1 });
 userSchema.index({ Clients: 1 });
 userSchema.index({ Requirements: 1 });
+userSchema.index({ excludedRequirements: 1 });
 
 const NewUser = mongoose.model('Users', userSchema);
 

@@ -28,6 +28,7 @@ const BLOCKED_REQUIREMENT_TYPES = new Set([
   'On Hold- Customer',
   'Fulfilled',
   'Closed',
+  'Cancelled',
   'Hold',
   'Cancel',
 ]);
