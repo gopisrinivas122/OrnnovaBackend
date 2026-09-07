@@ -695,6 +695,7 @@ app.post("/newRequirment", jdPdfUpload.single('jdPdf'), async(req,res)=>{
           duration:req.body.duration,
           location:req.body.location,
           sourceCtc:req.body.sourceCtc,
+          ectc: req.body.ectc || '',
           qualification:req.body.qualification,
           yearsExperience:req.body.yearsExperience,
           relevantExperience:req.body.relevantExperience,

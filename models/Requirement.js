@@ -8,6 +8,7 @@ const RequirementSchema = new mongoose.Schema({
   duration: { type: String, required: true },
   location: { type: String, required: true },
   sourceCtc: { type: String, required: true },
+  ectc: { type: String, default: '' },
   qualification: { type: String, required: true },
   yearsExperience: { type: String, required: true },
   relevantExperience: { type: String, required: true },
