@@ -2,6 +2,7 @@ const NewUser = require('../models/User');
 const NewRequirment = require('../models/Requirement');
 const CandidateModel = require('../models/Candidate');
 const { isActiveUser } = require('../utils/userStatus');
+const { getProfileUploadEnabled } = require('../utils/requirementUploadSettings.util');
 const { isRequirementExcludedForUser } = require('../utils/teamLeadRequirements');
 const {
   attachCreatorInfo,
@@ -200,7 +201,8 @@ async function canUserUploadToRequirement(user, requirement) {
   if (user.UserType === 'Admin') return false;
 
   const userId = user._id.toString();
-  return hasUserClaimed(requirement, userId);
+  if (!hasUserClaimed(requirement, userId)) return false;
+  return getProfileUploadEnabled(requirement, userId);
 }
 
 function getWorkflowBadge(requirement, user, { canClaim, canUpload }) {
@@ -240,6 +242,9 @@ async function enrichRequirementWorkflow(requirement, user, options = {}) {
 
   const workflowBadge = getWorkflowBadge(plain, user, { canClaim, canUpload });
   const claimedAt = currentClaim?.claimedDate || plain.claimedAt || null;
+  const hasClaimed = userId ? hasUserClaimed(plain, userId) : false;
+  const profileUploadEnabled = userId ? getProfileUploadEnabled(plain, userId) : true;
+  const uploadStopped = hasClaimed && !profileUploadEnabled;
 
   return {
     ...plain,
@@ -258,9 +263,12 @@ async function enrichRequirementWorkflow(requirement, user, options = {}) {
       canEdit,
       canAssign,
       workflowBadge,
+      profileUploadEnabled,
       uploadDisabledMessage: canUpload
         ? ''
-        : 'Claim this requirement before uploading profiles or taking candidate actions.',
+        : uploadStopped
+          ? 'Profile upload is currently stopped for you for this requirement.'
+          : 'Claim this requirement before uploading profiles or taking candidate actions.',
       assignDisabledMessage: 'Claim this requirement before assigning it to your team members.',
     },
   };
@@ -392,6 +400,18 @@ async function validateUploadAllowed(requirementId, req, recruiterId) {
   }
 
   if (!(await canUserUploadToRequirement(actor, requirement))) {
+    const userId = actor._id.toString();
+    const hasClaimed = hasUserClaimed(requirement, userId);
+    const profileUploadEnabled = getProfileUploadEnabled(requirement, userId);
+
+    if (hasClaimed && !profileUploadEnabled) {
+      return {
+        allowed: false,
+        statusCode: 403,
+        message: 'Profile upload is currently stopped for you for this requirement.',
+      };
+    }
+
     return {
       allowed: false,
       statusCode: 403,

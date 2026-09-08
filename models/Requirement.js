@@ -50,6 +50,10 @@ const RequirementSchema = new mongoose.Schema({
   },
   candidateCount: { type: Number, default: 0 },
   claimedBy: [{ userId: String, claimedDate: Date }],
+  userUploadSettings: [{
+    userId: { type: String, default: '' },
+    profileUploadEnabled: { type: Boolean, default: true },
+  }],
   jdPdf: { type: String, default: '' },
   jdPdfOriginalName: { type: String, default: '' },
 });

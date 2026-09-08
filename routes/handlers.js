@@ -83,6 +83,13 @@ const {
 const { canTeamLeadManageRequirement } = require('../utils/requirementVisibility');
 const { validateAssessments } = require('../utils/requirementAssessments');
 const {
+  getProfileUploadEnabled,
+  setProfileUploadEnabled,
+  removeUserUploadSetting,
+  attachProfileUploadEnabled,
+} = require('../utils/requirementUploadSettings.util');
+const { canUserManageUploadStatus } = require('../services/requirementUploadPermission.service');
+const {
   buildJdPublicPath,
   resolveJdAbsolutePath,
   deleteJdFileIfExists,
@@ -312,7 +319,8 @@ app.get('/userDetailsofAssignedRequirement/:reqId/:userId', async (req, res) => 
             ...activeUserFilter,
         });
 
-        res.json(userDetails);
+        const requirement = await NewRequirment.findById(reqId);
+        res.json(attachProfileUploadEnabled(requirement, userDetails));
     } catch (error) {
         res.status(500).json({ message: "Server Error", error });
     }
@@ -936,7 +944,8 @@ app.get("/actions/:id/:userid", async (req, res) => {
         }
 
         // Send the requirement data as response
-        res.json(requirement);
+        const enriched = await enrichRequirementWorkflow(requirement, user);
+        res.json(enriched);
     } catch (error) {
         console.error('Error fetching requirement:', error);
         res.status(500).json({ status: 'Failed', msg: 'Internal server error', error: error.message });
@@ -1858,6 +1867,7 @@ app.post('/unassignReq/:userId/:requirementId', async (req, res) => {
             }
 
             await excludeRequirementFromTeamLead(userId, requirementId);
+            await removeUserUploadSetting(requirementId, userId);
 
             await NewRequirment.updateOne(
                 { _id: requirementId },
@@ -1894,6 +1904,8 @@ app.post('/unassignReq/:userId/:requirementId', async (req, res) => {
         // Remove the requirementId from the user's Requirements array
         user.Requirements = user.Requirements.filter(reqId => reqId.toString() !== requirementId);
         await user.save();
+
+        await removeUserUploadSetting(requirementId, userId);
 
         // Update NewRequirement schema to remove userId from claimedBy field
         await NewRequirment.updateOne(
@@ -2625,6 +2637,7 @@ app.get('/admingetrequirements/:id', async (req, res) => {
             name: user.EmployeeName,
             email: user.Email,
             userType: user.UserType,
+            profileUploadEnabled: getProfileUploadEnabled(requirement, user._id),
         }));
 
         // Create an enriched response with requirement details and user data
@@ -2844,6 +2857,55 @@ app.patch('/api/requirements/:id/priority', asyncHandler(async (req, res) => {
     }
 
     res.json({ status: 'Success', msg: 'Requirement priority updated.', requirement });
+}));
+
+app.put('/api/requirements/:requirementId/assigned-users/:userId/upload-status', asyncHandler(async (req, res) => {
+    const { requirementId, userId } = req.params;
+    const actorId = req.user?.id;
+
+    if (!actorId) {
+        return res.status(401).json({ status: 'Failed', msg: 'Authentication required.' });
+    }
+
+    if (!isValidObjectId(requirementId) || !isValidObjectId(userId)) {
+        return res.status(400).json({ status: 'Error', msg: 'Invalid requirement or user ID.' });
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(req.body, 'profileUploadEnabled')) {
+        return res.status(400).json({ status: 'Error', msg: 'profileUploadEnabled is required.' });
+    }
+
+    const actor = await NewUser.findById(actorId);
+    if (!actor) {
+        return res.status(401).json({ status: 'Failed', msg: 'User not found.' });
+    }
+
+    const requirement = await NewRequirment.findById(requirementId);
+    if (!requirement) {
+        return res.status(404).json({ status: 'Error', msg: 'Requirement not found.' });
+    }
+
+    if (!(await canUserManageUploadStatus(actor, requirement, userId))) {
+        return res.status(403).json({
+            status: 'Failed',
+            msg: 'You do not have permission to update upload status for this user.',
+        });
+    }
+
+    const enabled = Boolean(req.body.profileUploadEnabled);
+    const result = await setProfileUploadEnabled(requirementId, userId, enabled);
+
+    if (!result.ok) {
+        return res.status(result.statusCode || 500).json({ status: 'Error', msg: result.message });
+    }
+
+    res.json({
+        status: 'Success',
+        msg: enabled
+            ? 'Profile upload started for this user on this requirement.'
+            : 'Profile upload stopped for this user on this requirement.',
+        profileUploadEnabled: result.profileUploadEnabled,
+    });
 }));
 
 // Status tracking dashboard (read-only, role-scoped)
