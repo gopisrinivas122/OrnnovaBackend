@@ -8,10 +8,12 @@ const REJECTED_STATUSES = new Set([
   'L3 Rejected',
   'ORNNOVA Screening Reject',
   'Internal Reject',
+  'Duplicate Profile',
 ]);
 
 const REJECTION_STAGE_LABELS = {
   'ORNNOVA Screening Reject': 'ORNNOVA Screening Reject',
+  'Duplicate Profile': 'Duplicate Profile',
   Rejected: 'Screening Rejected',
   'Client Rejected': 'Client Rejected',
   'Internal Reject': 'Internal Rejected',
