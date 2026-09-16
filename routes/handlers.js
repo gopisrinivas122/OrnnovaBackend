@@ -894,7 +894,13 @@ app.put('/claim/:id', async (req, res) => {
       const result = await claimRequirement(id, req, userId);
       return res.status(result.statusCode).json(result.payload);
     } catch (err) {
-      console.error('Server error:', err);
+      console.error('Claim requirement failed:', {
+        requirementId: id,
+        userId,
+        errorName: err.name,
+        message: err.message,
+        stack: err.stack,
+      });
       res.status(500).json({ status: "Fail", msg: "Server error." });
     }
   });

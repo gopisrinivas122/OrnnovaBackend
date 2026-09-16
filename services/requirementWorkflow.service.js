@@ -4,6 +4,7 @@ const CandidateModel = require('../models/Candidate');
 const { isActiveUser } = require('../utils/userStatus');
 const { getProfileUploadEnabled } = require('../utils/requirementUploadSettings.util');
 const { isRequirementExcludedForUser } = require('../utils/teamLeadRequirements');
+const logger = require('../utils/logger');
 const {
   attachCreatorInfo,
   buildCreatorInfoMapForRequirements,
@@ -16,6 +17,35 @@ const CLAIM_STATUS = {
 
 function normalizeId(value) {
   return value ? String(value) : '';
+}
+
+function toClaimEntries(claimedBy) {
+  if (!claimedBy) return [];
+  if (!Array.isArray(claimedBy)) return [];
+
+  return claimedBy.filter((claim) => claim && normalizeId(claim.userId));
+}
+
+function sanitizeRequirementClaimLists(requirement) {
+  if (!requirement) return;
+
+  const sanitized = toClaimEntries(requirement.claimedBy);
+  const rawLength = Array.isArray(requirement.claimedBy) ? requirement.claimedBy.length : 0;
+
+  if (rawLength !== sanitized.length) {
+    logger.warn('Removed invalid claimedBy entries while processing requirement claim state', {
+      requirementId: normalizeId(requirement._id),
+      rawLength,
+      sanitizedLength: sanitized.length,
+    });
+  }
+
+  requirement.claimedBy = sanitized;
+
+  const currentUserId = normalizeId(requirement.currentClaimedBy?.userId);
+  if (requirement.currentClaimedBy && !currentUserId) {
+    requirement.currentClaimedBy = undefined;
+  }
 }
 
 function resolveActorId(req, fallbackUserId) {
@@ -42,7 +72,7 @@ function getUserClaim(requirement, userId) {
     };
   }
 
-  const listed = (requirement.claimedBy || []).find(
+  const listed = toClaimEntries(requirement.claimedBy).find(
     (claim) => normalizeId(claim.userId) === uid
   );
   if (!listed) return null;
@@ -68,7 +98,7 @@ function getCurrentClaim(requirement) {
     };
   }
 
-  const firstListed = (requirement.claimedBy || [])[0];
+  const firstListed = toClaimEntries(requirement.claimedBy)[0];
   if (!firstListed?.userId) return null;
 
   return {
@@ -78,7 +108,8 @@ function getCurrentClaim(requirement) {
 }
 
 function getClaimStatus(requirement) {
-  const hasAnyClaim = (requirement?.claimedBy || []).length > 0 || Boolean(requirement?.currentClaimedBy?.userId);
+  const hasAnyClaim = toClaimEntries(requirement?.claimedBy).length > 0
+    || Boolean(requirement?.currentClaimedBy?.userId);
   if (requirement?.claimStatus === CLAIM_STATUS.ASSIGNED && !hasAnyClaim) {
     return CLAIM_STATUS.ASSIGNED;
   }
@@ -304,6 +335,8 @@ async function claimRequirement(requirementId, req, bodyUserId) {
     return { statusCode: 403, payload: { status: 'Fail', msg: 'You do not have access to this requirement.' } };
   }
 
+  sanitizeRequirementClaimLists(requirement);
+
   if (!(await canUserClaimRequirement(actor, requirement))) {
     return { statusCode: 403, payload: { status: 'Fail', msg: 'You cannot claim this requirement.' } };
   }
@@ -312,7 +345,6 @@ async function claimRequirement(requirementId, req, bodyUserId) {
   const claimedDate = new Date();
   const currentClaim = { userId, claimedDate };
 
-  requirement.claimedBy = requirement.claimedBy || [];
   const alreadyListed = requirement.claimedBy.some((claim) => normalizeId(claim.userId) === userId);
   if (!alreadyListed) {
     requirement.claimedBy.push(currentClaim);
@@ -322,7 +354,27 @@ async function claimRequirement(requirementId, req, bodyUserId) {
   requirement.claimStatus = CLAIM_STATUS.CLAIMED;
   requirement.claimedAt = claimedDate;
   if (!requirement.createdBy) requirement.createdBy = getCreatedBy(requirement);
-  await requirement.save();
+
+  try {
+    await requirement.save();
+  } catch (error) {
+    logger.error('claimRequirement save failed', {
+      requirementId: normalizeId(requirement._id),
+      userId,
+      errorName: error.name,
+      message: error.message,
+      stack: error.stack,
+    });
+
+    if (error.name === 'ValidationError') {
+      return {
+        statusCode: 400,
+        payload: { status: 'Fail', msg: error.message },
+      };
+    }
+
+    throw error;
+  }
 
   return {
     statusCode: 200,
@@ -347,6 +399,8 @@ async function unclaimRequirement(requirementId, req, bodyUserId) {
 
   const userId = actor._id.toString();
 
+  sanitizeRequirementClaimLists(requirement);
+
   if (!hasUserClaimed(requirement, userId)) {
     return { statusCode: 403, payload: { status: 'Fail', msg: 'You have not claimed this requirement.' } };
   }
@@ -359,7 +413,7 @@ async function unclaimRequirement(requirementId, req, bodyUserId) {
     };
   }
 
-  requirement.claimedBy = (requirement.claimedBy || []).filter(
+  requirement.claimedBy = toClaimEntries(requirement.claimedBy).filter(
     (claim) => normalizeId(claim.userId) !== userId
   );
 
@@ -430,6 +484,9 @@ async function syncRequirementCandidateCount(requirementId) {
 
 module.exports = {
   CLAIM_STATUS,
+  normalizeId,
+  toClaimEntries,
+  sanitizeRequirementClaimLists,
   resolveActorId,
   resolveActorRole,
   getCreatedBy,
