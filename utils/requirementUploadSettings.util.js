@@ -1,15 +1,44 @@
 const NewRequirment = require('../models/Requirement');
+const logger = require('./logger');
 
 function normalizeId(value) {
   if (!value) return '';
   return value.toString();
 }
 
+function toUploadSettingsEntries(userUploadSettings) {
+  if (!userUploadSettings) return [];
+  if (!Array.isArray(userUploadSettings)) return [];
+
+  return userUploadSettings.filter(
+    (item) => item && typeof item === 'object' && normalizeId(item.userId)
+  );
+}
+
+function sanitizeUserUploadSettings(requirement) {
+  if (!requirement) return;
+
+  const sanitized = toUploadSettingsEntries(requirement.userUploadSettings);
+  const rawLength = Array.isArray(requirement.userUploadSettings)
+    ? requirement.userUploadSettings.length
+    : 0;
+
+  if (rawLength !== sanitized.length) {
+    logger.warn('Removed invalid userUploadSettings entries', {
+      requirementId: normalizeId(requirement._id),
+      rawLength,
+      sanitizedLength: sanitized.length,
+    });
+  }
+
+  requirement.userUploadSettings = sanitized;
+}
+
 function getProfileUploadEnabled(requirement, userId) {
   if (!requirement || !userId) return true;
 
   const uid = normalizeId(userId);
-  const settings = requirement.userUploadSettings || [];
+  const settings = toUploadSettingsEntries(requirement.userUploadSettings);
   const entry = settings.find((item) => normalizeId(item.userId) === uid);
 
   if (!entry || typeof entry.profileUploadEnabled !== 'boolean') {
@@ -28,7 +57,9 @@ async function setProfileUploadEnabled(requirementId, userId, enabled) {
     return { ok: false, statusCode: 404, message: 'Requirement not found.' };
   }
 
-  const settings = [...(requirement.userUploadSettings || [])];
+  sanitizeUserUploadSettings(requirement);
+
+  const settings = [...toUploadSettingsEntries(requirement.userUploadSettings)];
   const index = settings.findIndex((item) => normalizeId(item.userId) === uid);
 
   if (index >= 0) {
@@ -69,6 +100,8 @@ function attachProfileUploadEnabled(requirement, users = []) {
 }
 
 module.exports = {
+  toUploadSettingsEntries,
+  sanitizeUserUploadSettings,
   getProfileUploadEnabled,
   setProfileUploadEnabled,
   removeUserUploadSetting,

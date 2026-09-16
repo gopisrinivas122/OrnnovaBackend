@@ -2,7 +2,10 @@ const NewUser = require('../models/User');
 const NewRequirment = require('../models/Requirement');
 const CandidateModel = require('../models/Candidate');
 const { isActiveUser } = require('../utils/userStatus');
-const { getProfileUploadEnabled } = require('../utils/requirementUploadSettings.util');
+const {
+  getProfileUploadEnabled,
+  sanitizeUserUploadSettings,
+} = require('../utils/requirementUploadSettings.util');
 const { isRequirementExcludedForUser } = require('../utils/teamLeadRequirements');
 const logger = require('../utils/logger');
 const {
@@ -46,6 +49,8 @@ function sanitizeRequirementClaimLists(requirement) {
   if (requirement.currentClaimedBy && !currentUserId) {
     requirement.currentClaimedBy = undefined;
   }
+
+  sanitizeUserUploadSettings(requirement);
 }
 
 function resolveActorId(req, fallbackUserId) {
