@@ -90,6 +90,11 @@ const {
 } = require('../utils/requirementUploadSettings.util');
 const { canUserManageUploadStatus } = require('../services/requirementUploadPermission.service');
 const {
+  countJoinedCandidates,
+  applyPositionLimitIfReached,
+  handleNewUserAssignment,
+} = require('../services/requirementPositionLimit.service');
+const {
   buildJdPublicPath,
   resolveJdAbsolutePath,
   deleteJdFileIfExists,
@@ -1829,6 +1834,8 @@ app.post('/assignReq/:userId/:requirementId', async (req, res) => {
             text: `Dear ${user.EmployeeName},\n\nA new requirement has been successfully assigned to you.\n\n Check Here: https://ornnova.com/HR/`,
         });
 
+        await handleNewUserAssignment(requirementId, userId);
+
         return res.json({ status: 'success', msg: 'Requirement assigned successfully ✅' });
     } catch (error) {
         console.error('Error assigning requirement:', error);
@@ -2457,6 +2464,14 @@ app.put('/updatestatus/:candidateId', async (req, res) => {
     }
 
     try {
+        const existingMain = await CandidateModel.findOne({ 'candidates._id': candidateId }).select('reqId');
+        const requirementBeforeUpdate = existingMain?.reqId
+            ? await NewRequirment.findById(existingMain.reqId)
+            : null;
+        const joinedCountBefore = requirementBeforeUpdate
+            ? await countJoinedCandidates(requirementBeforeUpdate)
+            : 0;
+
         const trimmedRemark = String(remark).trim();
         const updateOps = {
             $push: {
@@ -2499,6 +2514,17 @@ app.put('/updatestatus/:candidateId', async (req, res) => {
         }
 
         const updatedCandidate = updatedMain.candidates.id(candidateId);
+
+        if (normalizedStatus === 'Joined' && requirementBeforeUpdate) {
+            const joinedCountAfter = await countJoinedCandidates(requirementBeforeUpdate);
+            const positionLimit = requirementBeforeUpdate.numberOfPositions || 1;
+
+            if (joinedCountBefore < positionLimit && joinedCountAfter >= positionLimit) {
+                await applyPositionLimitIfReached(requirementBeforeUpdate._id, {
+                    respectManualOverride: false,
+                });
+            }
+        }
 
         res.status(200).json({
             message: 'Status updated successfully ✅',
@@ -2899,7 +2925,13 @@ app.put('/api/requirements/:requirementId/assigned-users/:userId/upload-status',
     }
 
     const enabled = Boolean(req.body.profileUploadEnabled);
-    const result = await setProfileUploadEnabled(requirementId, userId, enabled);
+    const joinedCount = await countJoinedCandidates(requirement);
+    const positionLimit = requirement.numberOfPositions || 1;
+    const result = await setProfileUploadEnabled(requirementId, userId, enabled, {
+        isManualChange: true,
+        joinedCount,
+        positionLimit,
+    });
 
     if (!result.ok) {
         return res.status(result.statusCode || 500).json({ status: 'Error', msg: result.message });

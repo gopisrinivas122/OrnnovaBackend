@@ -2,6 +2,7 @@ const NewUser = require('../models/User');
 const NewRequirment = require('../models/Requirement');
 const { activeUserFilter, isActiveUser } = require('../utils/userStatus');
 const { sendEmailSafely } = require('../config/mail');
+const { handleNewUserAssignment } = require('./requirementPositionLimit.service');
 
 function normalizeAssignedMembers(rawValue) {
   if (rawValue === undefined || rawValue === null || rawValue === '') {
@@ -74,6 +75,8 @@ async function assignRequirementToMembers(requirement, memberIds, assignedByUser
         subject: 'Requirement Assigned To You',
         text: `Dear ${member.EmployeeName},\n\nA new requirement has been assigned to you. Please claim it before uploading profiles.\n\nCheck Here: https://ornnova.com/HR/`,
       });
+
+      await handleNewUserAssignment(requirement._id, memberId);
     }
 
     assignedRecords.push({

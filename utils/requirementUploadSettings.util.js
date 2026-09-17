@@ -48,9 +48,12 @@ function getProfileUploadEnabled(requirement, userId) {
   return entry.profileUploadEnabled;
 }
 
-async function setProfileUploadEnabled(requirementId, userId, enabled) {
+async function setProfileUploadEnabled(requirementId, userId, enabled, options = {}) {
   const reqId = normalizeId(requirementId);
   const uid = normalizeId(userId);
+  const isManualChange = Boolean(options.isManualChange);
+  const joinedCount = Number(options.joinedCount);
+  const positionLimit = Number(options.positionLimit);
 
   const requirement = await NewRequirment.findById(reqId);
   if (!requirement) {
@@ -61,11 +64,38 @@ async function setProfileUploadEnabled(requirementId, userId, enabled) {
 
   const settings = [...toUploadSettingsEntries(requirement.userUploadSettings)];
   const index = settings.findIndex((item) => normalizeId(item.userId) === uid);
+  const enabledValue = Boolean(enabled);
+
+  let positionLimitOverride = index >= 0
+    ? Boolean(settings[index].positionLimitOverride)
+    : false;
+
+  if (isManualChange) {
+    if (enabledValue) {
+      const limit = Number.isFinite(positionLimit) && positionLimit > 0
+        ? positionLimit
+        : Number(requirement.numberOfPositions) || 1;
+      const joined = Number.isFinite(joinedCount)
+        ? joinedCount
+        : null;
+      positionLimitOverride = joined != null ? joined >= limit : false;
+    } else {
+      positionLimitOverride = false;
+    }
+  } else if (!enabledValue) {
+    positionLimitOverride = false;
+  }
+
+  const nextEntry = {
+    userId: uid,
+    profileUploadEnabled: enabledValue,
+    positionLimitOverride,
+  };
 
   if (index >= 0) {
-    settings[index] = { ...settings[index], userId: uid, profileUploadEnabled: Boolean(enabled) };
+    settings[index] = { ...settings[index], ...nextEntry };
   } else {
-    settings.push({ userId: uid, profileUploadEnabled: Boolean(enabled) });
+    settings.push(nextEntry);
   }
 
   requirement.userUploadSettings = settings;
@@ -74,7 +104,8 @@ async function setProfileUploadEnabled(requirementId, userId, enabled) {
   return {
     ok: true,
     requirement,
-    profileUploadEnabled: Boolean(enabled),
+    profileUploadEnabled: enabledValue,
+    positionLimitOverride,
   };
 }
 
