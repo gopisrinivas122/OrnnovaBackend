@@ -53,6 +53,7 @@ const RequirementSchema = new mongoose.Schema({
   userUploadSettings: [{
     userId: { type: String, default: '' },
     profileUploadEnabled: { type: Boolean, default: true },
+    manuallyStopped: { type: Boolean, default: false },
     positionLimitOverride: { type: Boolean, default: false },
   }],
   jdPdf: { type: String, default: '' },

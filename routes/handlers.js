@@ -83,17 +83,13 @@ const {
 const { canTeamLeadManageRequirement } = require('../utils/requirementVisibility');
 const { validateAssessments } = require('../utils/requirementAssessments');
 const {
+  getManualProfileUploadEnabled,
   getProfileUploadEnabled,
   setProfileUploadEnabled,
   removeUserUploadSetting,
   attachProfileUploadEnabled,
 } = require('../utils/requirementUploadSettings.util');
 const { canUserManageUploadStatus } = require('../services/requirementUploadPermission.service');
-const {
-  countJoinedCandidates,
-  applyPositionLimitIfReached,
-  handleNewUserAssignment,
-} = require('../services/requirementPositionLimit.service');
 const {
   buildJdPublicPath,
   resolveJdAbsolutePath,
@@ -1834,8 +1830,6 @@ app.post('/assignReq/:userId/:requirementId', async (req, res) => {
             text: `Dear ${user.EmployeeName},\n\nA new requirement has been successfully assigned to you.\n\n Check Here: https://ornnova.com/HR/`,
         });
 
-        await handleNewUserAssignment(requirementId, userId);
-
         return res.json({ status: 'success', msg: 'Requirement assigned successfully ✅' });
     } catch (error) {
         console.error('Error assigning requirement:', error);
@@ -2464,14 +2458,6 @@ app.put('/updatestatus/:candidateId', async (req, res) => {
     }
 
     try {
-        const existingMain = await CandidateModel.findOne({ 'candidates._id': candidateId }).select('reqId');
-        const requirementBeforeUpdate = existingMain?.reqId
-            ? await NewRequirment.findById(existingMain.reqId)
-            : null;
-        const joinedCountBefore = requirementBeforeUpdate
-            ? await countJoinedCandidates(requirementBeforeUpdate)
-            : 0;
-
         const trimmedRemark = String(remark).trim();
         const updateOps = {
             $push: {
@@ -2514,17 +2500,6 @@ app.put('/updatestatus/:candidateId', async (req, res) => {
         }
 
         const updatedCandidate = updatedMain.candidates.id(candidateId);
-
-        if (normalizedStatus === 'Joined' && requirementBeforeUpdate) {
-            const joinedCountAfter = await countJoinedCandidates(requirementBeforeUpdate);
-            const positionLimit = requirementBeforeUpdate.numberOfPositions || 1;
-
-            if (joinedCountBefore < positionLimit && joinedCountAfter >= positionLimit) {
-                await applyPositionLimitIfReached(requirementBeforeUpdate._id, {
-                    respectManualOverride: false,
-                });
-            }
-        }
 
         res.status(200).json({
             message: 'Status updated successfully ✅',
@@ -2664,13 +2639,17 @@ app.get('/admingetrequirements/:id', async (req, res) => {
             Requirements: reqId,
         });
 
-        const userDetails = users.map(user => ({
-            _id: user._id,
-            name: user.EmployeeName,
-            email: user.Email,
-            userType: user.UserType,
-            profileUploadEnabled: getProfileUploadEnabled(requirement, user._id),
-        }));
+        const userDetails = users.map(user => {
+            const manualProfileUploadEnabled = getManualProfileUploadEnabled(requirement, user._id);
+            return {
+                _id: user._id,
+                name: user.EmployeeName,
+                email: user.Email,
+                userType: user.UserType,
+                manualProfileUploadEnabled,
+                profileUploadEnabled: manualProfileUploadEnabled,
+            };
+        });
 
         // Create an enriched response with requirement details and user data
         const enrichedRequirement = {
@@ -2925,13 +2904,7 @@ app.put('/api/requirements/:requirementId/assigned-users/:userId/upload-status',
     }
 
     const enabled = Boolean(req.body.profileUploadEnabled);
-    const joinedCount = await countJoinedCandidates(requirement);
-    const positionLimit = requirement.numberOfPositions || 1;
-    const result = await setProfileUploadEnabled(requirementId, userId, enabled, {
-        isManualChange: true,
-        joinedCount,
-        positionLimit,
-    });
+    const result = await setProfileUploadEnabled(requirementId, userId, enabled);
 
     if (!result.ok) {
         return res.status(result.statusCode || 500).json({ status: 'Error', msg: result.message });

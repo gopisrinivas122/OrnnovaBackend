@@ -11,6 +11,37 @@ const REJECTED_STATUSES = new Set([
   'Duplicate Profile',
 ]);
 
+const LEGACY_PRESENT_INTERVIEW_STATUS_MAP = {
+  'L1 Pending': 'L1 Schedule',
+  'L2 Pending': 'L2 Schedule',
+};
+
+/** Admin Dashboard Present Interviews — canonical positive/current statuses only. */
+const PRESENT_INTERVIEW_STATUSES = new Set([
+  'Selected',
+  'L1 Schedule',
+  'L2 Schedule',
+  'L3 Schedule',
+  'L1 Selected',
+  'L2 Selected',
+  'L3 Selected',
+  'Offer Released',
+  'Offer Accepted',
+  'Onboard Confirmation',
+  'HR Round',
+  'Joined',
+]);
+
+function isPresentInterviewStatus(status) {
+  if (!status) return false;
+  const normalized = LEGACY_PRESENT_INTERVIEW_STATUS_MAP[status] || status;
+  return PRESENT_INTERVIEW_STATUSES.has(normalized);
+}
+
+function isPresentInterviewCandidate(candidate) {
+  return isPresentInterviewStatus(getLatestStatus(candidate));
+}
+
 const REJECTION_STAGE_LABELS = {
   'ORNNOVA Screening Reject': 'ORNNOVA Screening Reject',
   'Duplicate Profile': 'Duplicate Profile',
@@ -223,6 +254,9 @@ module.exports = {
   findLatestRejectionEntry,
   getCandidateRejectionDetails,
   isJoinedStatus,
+  isPresentInterviewStatus,
+  isPresentInterviewCandidate,
+  PRESENT_INTERVIEW_STATUSES,
   hasOfferStatus,
   parseInterviewDate,
   isNoActionTakenCandidate,

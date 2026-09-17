@@ -3,9 +3,11 @@ const NewRequirment = require('../models/Requirement');
 const CandidateModel = require('../models/Candidate');
 const { isActiveUser } = require('../utils/userStatus');
 const {
+  getManualProfileUploadEnabled,
   getProfileUploadEnabled,
   sanitizeUserUploadSettings,
 } = require('../utils/requirementUploadSettings.util');
+const { isPositionLimitReached } = require('./requirementPositionLimit.service');
 const { isRequirementExcludedForUser } = require('../utils/teamLeadRequirements');
 const logger = require('../utils/logger');
 const {
@@ -238,7 +240,9 @@ async function canUserUploadToRequirement(user, requirement) {
 
   const userId = user._id.toString();
   if (!hasUserClaimed(requirement, userId)) return false;
-  return getProfileUploadEnabled(requirement, userId);
+  if (!getManualProfileUploadEnabled(requirement, userId)) return false;
+  if (await isPositionLimitReached(requirement)) return false;
+  return true;
 }
 
 function getWorkflowBadge(requirement, user, { canClaim, canUpload }) {
@@ -279,8 +283,9 @@ async function enrichRequirementWorkflow(requirement, user, options = {}) {
   const workflowBadge = getWorkflowBadge(plain, user, { canClaim, canUpload });
   const claimedAt = currentClaim?.claimedDate || plain.claimedAt || null;
   const hasClaimed = userId ? hasUserClaimed(plain, userId) : false;
-  const profileUploadEnabled = userId ? getProfileUploadEnabled(plain, userId) : true;
-  const uploadStopped = hasClaimed && !profileUploadEnabled;
+  const manualProfileUploadEnabled = userId ? getManualProfileUploadEnabled(plain, userId) : true;
+  const positionLimitReached = userId ? await isPositionLimitReached(plain) : false;
+  const uploadStopped = hasClaimed && !manualProfileUploadEnabled;
 
   return {
     ...plain,
@@ -299,12 +304,16 @@ async function enrichRequirementWorkflow(requirement, user, options = {}) {
       canEdit,
       canAssign,
       workflowBadge,
-      profileUploadEnabled,
+      profileUploadEnabled: manualProfileUploadEnabled,
+      manualProfileUploadEnabled,
+      positionLimitReached,
       uploadDisabledMessage: canUpload
         ? ''
         : uploadStopped
           ? 'Profile upload is currently stopped for you for this requirement.'
-          : 'Claim this requirement before uploading profiles or taking candidate actions.',
+          : hasClaimed && positionLimitReached
+            ? 'Profile upload is blocked because the required number of positions has been filled.'
+            : 'Claim this requirement before uploading profiles or taking candidate actions.',
       assignDisabledMessage: 'Claim this requirement before assigning it to your team members.',
     },
   };
@@ -461,13 +470,22 @@ async function validateUploadAllowed(requirementId, req, recruiterId) {
   if (!(await canUserUploadToRequirement(actor, requirement))) {
     const userId = actor._id.toString();
     const hasClaimed = hasUserClaimed(requirement, userId);
-    const profileUploadEnabled = getProfileUploadEnabled(requirement, userId);
+    const manualProfileUploadEnabled = getManualProfileUploadEnabled(requirement, userId);
+    const positionLimitReached = await isPositionLimitReached(requirement);
 
-    if (hasClaimed && !profileUploadEnabled) {
+    if (hasClaimed && !manualProfileUploadEnabled) {
       return {
         allowed: false,
         statusCode: 403,
         message: 'Profile upload is currently stopped for you for this requirement.',
+      };
+    }
+
+    if (hasClaimed && positionLimitReached) {
+      return {
+        allowed: false,
+        statusCode: 403,
+        message: 'Profile upload is blocked because the required number of positions has been filled.',
       };
     }
 

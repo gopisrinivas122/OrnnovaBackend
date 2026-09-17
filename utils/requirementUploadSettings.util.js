@@ -34,26 +34,34 @@ function sanitizeUserUploadSettings(requirement) {
   requirement.userUploadSettings = sanitized;
 }
 
-function getProfileUploadEnabled(requirement, userId) {
+function getManualProfileUploadEnabled(requirement, userId) {
   if (!requirement || !userId) return true;
 
   const uid = normalizeId(userId);
   const settings = toUploadSettingsEntries(requirement.userUploadSettings);
   const entry = settings.find((item) => normalizeId(item.userId) === uid);
 
-  if (!entry || typeof entry.profileUploadEnabled !== 'boolean') {
-    return true;
+  if (!entry) return true;
+
+  if (typeof entry.manuallyStopped === 'boolean') {
+    return !entry.manuallyStopped;
   }
 
-  return entry.profileUploadEnabled;
+  if (typeof entry.profileUploadEnabled === 'boolean') {
+    return entry.profileUploadEnabled;
+  }
+
+  return true;
 }
 
-async function setProfileUploadEnabled(requirementId, userId, enabled, options = {}) {
+function getProfileUploadEnabled(requirement, userId) {
+  return getManualProfileUploadEnabled(requirement, userId);
+}
+
+async function setProfileUploadEnabled(requirementId, userId, enabled) {
   const reqId = normalizeId(requirementId);
   const uid = normalizeId(userId);
-  const isManualChange = Boolean(options.isManualChange);
-  const joinedCount = Number(options.joinedCount);
-  const positionLimit = Number(options.positionLimit);
+  const enabledValue = Boolean(enabled);
 
   const requirement = await NewRequirment.findById(reqId);
   if (!requirement) {
@@ -64,32 +72,11 @@ async function setProfileUploadEnabled(requirementId, userId, enabled, options =
 
   const settings = [...toUploadSettingsEntries(requirement.userUploadSettings)];
   const index = settings.findIndex((item) => normalizeId(item.userId) === uid);
-  const enabledValue = Boolean(enabled);
-
-  let positionLimitOverride = index >= 0
-    ? Boolean(settings[index].positionLimitOverride)
-    : false;
-
-  if (isManualChange) {
-    if (enabledValue) {
-      const limit = Number.isFinite(positionLimit) && positionLimit > 0
-        ? positionLimit
-        : Number(requirement.numberOfPositions) || 1;
-      const joined = Number.isFinite(joinedCount)
-        ? joinedCount
-        : null;
-      positionLimitOverride = joined != null ? joined >= limit : false;
-    } else {
-      positionLimitOverride = false;
-    }
-  } else if (!enabledValue) {
-    positionLimitOverride = false;
-  }
 
   const nextEntry = {
     userId: uid,
     profileUploadEnabled: enabledValue,
-    positionLimitOverride,
+    manuallyStopped: !enabledValue,
   };
 
   if (index >= 0) {
@@ -105,7 +92,8 @@ async function setProfileUploadEnabled(requirementId, userId, enabled, options =
     ok: true,
     requirement,
     profileUploadEnabled: enabledValue,
-    positionLimitOverride,
+    manualProfileUploadEnabled: enabledValue,
+    manuallyStopped: !enabledValue,
   };
 }
 
@@ -123,9 +111,11 @@ function attachProfileUploadEnabled(requirement, users = []) {
   return users.map((user) => {
     const plain = user?.toObject ? user.toObject() : { ...user };
     const userId = normalizeId(plain._id || plain.userId);
+    const manualProfileUploadEnabled = getManualProfileUploadEnabled(requirement, userId);
     return {
       ...plain,
-      profileUploadEnabled: getProfileUploadEnabled(requirement, userId),
+      manualProfileUploadEnabled,
+      profileUploadEnabled: manualProfileUploadEnabled,
     };
   });
 }
@@ -133,6 +123,7 @@ function attachProfileUploadEnabled(requirement, users = []) {
 module.exports = {
   toUploadSettingsEntries,
   sanitizeUserUploadSettings,
+  getManualProfileUploadEnabled,
   getProfileUploadEnabled,
   setProfileUploadEnabled,
   removeUserUploadSetting,
