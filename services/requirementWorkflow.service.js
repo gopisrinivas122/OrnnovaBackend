@@ -168,8 +168,9 @@ async function canUserViewRequirement(user, requirement) {
   if (user.UserType === 'Admin') return true;
 
   if (user.UserType === 'TeamLead') {
+    if (getCreatedBy(requirement) === userId) return true;
     if (isRequirementExcludedForUser(user, reqId)) return false;
-    return getCreatedBy(requirement) === userId || isUserAssignedToRequirement(user, reqId);
+    return isUserAssignedToRequirement(user, reqId);
   }
 
   if (user.UserType === 'User') {

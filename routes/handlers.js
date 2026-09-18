@@ -23,6 +23,7 @@ const {
 } = require('../services/trackingDashboard.service');
 const {
   getRequirementsForTeamLead,
+  getTeamLeadRequirementsByScope,
   getRequirementsForUser,
   userCanAccessRequirement,
   attachRequirementToTeamLead,
@@ -773,14 +774,17 @@ app.get('/getrequirements', async (req, res) => {
             return res.status(404).json({ status: "Error", msg: "User not found" });
         }
 
-        // Step 2: Get the client's IDs and the user's Requirements array
-        const allRequirements = await getRequirementsForTeamLead(user, { withSource: true, lean: true });
+        const scope = req.query.scope || 'all';
+        const allRequirements = await getTeamLeadRequirementsByScope(user, {
+          scope,
+          withSource: true,
+          lean: true,
+        });
 
         if (allRequirements.length === 0) {
             return res.json([]);
         }
 
-        // Step 4: Get the user's Team (team members' IDs)
         const teamIds = user.Team || [];
 
         if (!teamIds.length) {
@@ -2178,7 +2182,12 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
         const teamIds = user.Team || [];
         const teamUsers = await NewUser.find({ _id: { $in: teamIds }, ...activeUserFilter });
         const activeTeamIds = teamUsers.map((teamUser) => teamUser._id);
-        const allRequirements = await getRequirementsForTeamLead(user, { withSource: true, lean: true });
+        const scope = req.query.scope || 'all';
+        const allRequirements = await getTeamLeadRequirementsByScope(user, {
+          scope,
+          withSource: true,
+          lean: true,
+        });
 
         if (!allRequirements.length) {
             return res.json([]);

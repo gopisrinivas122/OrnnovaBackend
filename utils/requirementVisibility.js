@@ -1,24 +1,10 @@
-const NewRequirment = require('../models/Requirement');
-const { getCreatedBy } = require('../services/requirementWorkflow.service');
-const {
-  filterExcludedRequirementsForUser,
-} = require('./teamLeadRequirements');
+const { getRequirementsForTeamLead } = require('./teamLeadRequirements');
 
 async function getVisibleRequirementsForTeamLead(user, options = {}) {
-  if (!user) return [];
-
-  const userId = user._id.toString();
-  const assignedIds = (user.Requirements || []).map((id) => id.toString()).filter(Boolean);
-
-  const orConditions = [{ uploadedBy: userId }];
-  if (assignedIds.length) {
-    orConditions.push({ _id: { $in: assignedIds } });
-  }
-
-  const query = NewRequirment.find({ $or: orConditions });
-  if (options.lean) query.lean();
-  const results = await query.exec();
-  return filterExcludedRequirementsForUser(user, results);
+  return getRequirementsForTeamLead(user, {
+    lean: options.lean !== false,
+    withSource: false,
+  });
 }
 
 async function getVisibleRequirementsForRecruiter(user, options = {}) {

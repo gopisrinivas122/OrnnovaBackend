@@ -6,6 +6,7 @@ const { isValidObjectId } = require('../middleware/validateObjectId');
 const {
   attachCreatorInfo,
   buildCreatorInfoMapForRequirements,
+  getRequirementCreatorId,
 } = require('./requirementCreator');
 
 const SOURCE_LABELS = {
@@ -123,6 +124,77 @@ function filterExcludedRequirementsForUser(user, requirements = []) {
   return requirements.filter((req) => !excluded.has(req._id.toString()));
 }
 
+function parseTeamLeadRequirementScope(scope) {
+  return String(scope || 'all').toLowerCase() === 'mine' ? 'mine' : 'all';
+}
+
+function isRequirementCreatedByUser(user, requirement) {
+  if (!user || !requirement) return false;
+  return getRequirementCreatorId(requirement) === user._id.toString();
+}
+
+function isRequirementAssignedToTeamLead(user, requirement) {
+  if (!user || !requirement) return false;
+  const reqId = requirement._id.toString();
+  if (isRequirementExcludedForUser(user, reqId)) return false;
+  return (user.Requirements || []).some((id) => id.toString() === reqId);
+}
+
+function isRequirementVisibleToTeamLead(user, requirement, scope = 'all') {
+  if (!user || !requirement) return false;
+  if (scope === 'mine') {
+    return isRequirementCreatedByUser(user, requirement);
+  }
+  return isRequirementCreatedByUser(user, requirement)
+    || isRequirementAssignedToTeamLead(user, requirement);
+}
+
+async function fetchTeamLeadRequirementCandidates(user, { lean = false } = {}) {
+  if (!user) return [];
+
+  const userId = user._id.toString();
+  const assignedIds = (user.Requirements || []).map((id) => id.toString()).filter(Boolean);
+
+  const orConditions = [
+    { createdBy: userId },
+    { uploadedBy: userId },
+  ];
+  if (assignedIds.length) {
+    orConditions.push({ _id: { $in: assignedIds } });
+  }
+
+  const query = NewRequirment.find({ $or: orConditions });
+  if (lean) query.lean();
+  const results = await query.exec();
+  return uniqueRequirements(results);
+}
+
+async function enrichTeamLeadRequirements(requirements = [], withSource = false) {
+  if (!withSource) return requirements;
+  const creatorInfoMap = await buildCreatorInfoMapForRequirements(requirements);
+  return requirements.map((requirement) => attachCreatorInfo(requirement, creatorInfoMap));
+}
+
+async function getMyRequirementsForTeamLead(user, { lean = false, withSource = false } = {}) {
+  const candidates = await fetchTeamLeadRequirementCandidates(user, { lean });
+  const visible = candidates.filter((req) => isRequirementCreatedByUser(user, req));
+  return enrichTeamLeadRequirements(visible, withSource);
+}
+
+async function getRequirementsForTeamLead(user, { lean = false, withSource = false } = {}) {
+  const candidates = await fetchTeamLeadRequirementCandidates(user, { lean });
+  const visible = candidates.filter((req) => isRequirementVisibleToTeamLead(user, req, 'all'));
+  return enrichTeamLeadRequirements(visible, withSource);
+}
+
+async function getTeamLeadRequirementsByScope(user, { scope = 'all', lean = false, withSource = false } = {}) {
+  const normalizedScope = parseTeamLeadRequirementScope(scope);
+  if (normalizedScope === 'mine') {
+    return getMyRequirementsForTeamLead(user, { lean, withSource });
+  }
+  return getRequirementsForTeamLead(user, { lean, withSource });
+}
+
 async function excludeRequirementFromTeamLead(userId, requirementId) {
   if (!userId || !requirementId) return null;
 
@@ -152,31 +224,6 @@ async function restoreRequirementForTeamLead(userId, requirementId) {
     (id) => id.toString() !== reqIdStr
   );
   await user.save();
-}
-
-async function getRequirementsForTeamLead(user, { lean = false, withSource = false } = {}) {
-  if (!user) return [];
-
-  const userId = user._id.toString();
-  const assignedIds = (user.Requirements || []).map((id) => id.toString()).filter(Boolean);
-
-  const orConditions = [{ uploadedBy: userId }];
-  if (assignedIds.length) {
-    orConditions.push({ _id: { $in: assignedIds } });
-  }
-
-  const query = NewRequirment.find({ $or: orConditions });
-  if (lean) query.lean();
-  const results = await query.exec();
-  const unique = uniqueRequirements(results);
-
-  const visible = filterExcludedRequirementsForUser(user, unique);
-
-  if (!withSource) return visible;
-
-  const creatorInfoMap = await buildCreatorInfoMapForRequirements(visible);
-
-  return visible.map((requirement) => attachCreatorInfo(requirement, creatorInfoMap));
 }
 
 async function attachRequirementToTeamLead(userId, requirementId) {
@@ -229,9 +276,7 @@ async function userCanAccessRequirement(user, requirement) {
   if (user.UserType === 'Admin') return true;
 
   if (user.UserType === 'TeamLead') {
-    if (isRequirementExcludedForUser(user, requirementId)) return false;
-    return String(requirement.uploadedBy || requirement.createdBy || '') === userId
-      || (user.Requirements || []).some((id) => id.toString() === requirementId);
+    return isRequirementVisibleToTeamLead(user, requirement, 'all');
   }
 
   return (user.Requirements || []).some((id) => id.toString() === requirementId);
@@ -241,7 +286,13 @@ module.exports = {
   SOURCE_LABELS,
   getTeamLeadClientContext,
   classifyRequirementSource,
+  parseTeamLeadRequirementScope,
+  isRequirementCreatedByUser,
+  isRequirementAssignedToTeamLead,
+  isRequirementVisibleToTeamLead,
+  getMyRequirementsForTeamLead,
   getRequirementsForTeamLead,
+  getTeamLeadRequirementsByScope,
   getRequirementsForUser,
   userCanAccessRequirement,
   attachRequirementToTeamLead,
