@@ -1,4 +1,5 @@
 const NewRequirment = require('../models/Requirement');
+const { enrichRequirementsWithClientNames } = require('../utils/requirementClient');
 const NewUser = require('../models/User');
 const CandidateModel = require('../models/Candidate');
 const {
@@ -147,12 +148,14 @@ function formatCandidateRow(row, reqMap, userMap) {
 }
 
 async function loadTrackingContext(viewerUserId, filters = {}) {
-  const [requirements, users, candidateDocs, viewer] = await Promise.all([
+  const [rawRequirements, users, candidateDocs, viewer] = await Promise.all([
     NewRequirment.find().lean(),
     NewUser.find().lean(),
     CandidateModel.find().lean(),
     NewUser.findById(viewerUserId).lean(),
   ]);
+
+  const requirements = await enrichRequirementsWithClientNames(rawRequirements);
 
   if (!viewer) {
     return { error: 'User not found' };

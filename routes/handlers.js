@@ -57,6 +57,12 @@ const {
   getRequirementCreatorId,
   buildCreatorInfoMap,
 } = require('../utils/requirementCreator');
+const {
+  enrichRequirementWithClientName,
+  enrichRequirementsWithClientNames,
+  syncRequirementsForClientRename,
+  resolveRequirementClientUpdate,
+} = require('../utils/requirementClient');
 const { importRequirements } = require('../services/requirementImport.service');
 const { importClients } = require('../services/clientImport.service');
 const { hashPassword } = require('../utils/password');
@@ -289,7 +295,8 @@ app.get('/userDetailstoAssignRequirement/:reqId/:userId', async (req, res) => {
         }
 
         // Return both team members and the requirement details
-        const enrichedRequirement = await enrichRequirementWorkflow(requirementDetails, user);
+        const requirementWithClientName = await enrichRequirementWithClientName(requirementDetails);
+        const enrichedRequirement = await enrichRequirementWorkflow(requirementWithClientName, user);
 
         res.json({
             teamMembers,
@@ -322,7 +329,8 @@ app.get('/userDetailsofAssignedRequirement/:reqId/:userId', async (req, res) => 
         });
 
         const requirement = await NewRequirment.findById(reqId);
-        res.json(attachProfileUploadEnabled(requirement, userDetails));
+        const requirementWithClientName = await enrichRequirementWithClientName(requirement);
+        res.json(attachProfileUploadEnabled(requirementWithClientName, userDetails));
     } catch (error) {
         res.status(500).json({ message: "Server Error", error });
     }
@@ -611,13 +619,21 @@ app.delete("/deleteClient/:id", asyncHandler(async (req, res) => {
 app.put("/UpdateClient/:id", async(req,res)=>{
     // console.log(req.params.id);
     try {
+        let previousClientName = '';
+        if (req.body.ClientName?.length > 0) {
+          const existingClient = await NewClient.findById(req.body.id).select('ClientName').lean();
+          previousClientName = existingClient?.ClientName || '';
+        }
+
         if(req.body.ClientCode.length>0){
           await NewClient.updateOne({_id:req.body.id},
             {ClientCode:req.body.ClientCode});
         }
         if(req.body.ClientName.length>0){
+            const newClientName = req.body.ClientName;
             await NewClient.updateOne({_id:req.body.id},
-              {ClientName:req.body.ClientName});
+              {ClientName: newClientName});
+            await syncRequirementsForClientRename(req.body.id, previousClientName, newClientName);
           }
           if(req.body.Services.length>0){
             await NewClient.updateOne({_id:req.body.id},
@@ -757,7 +773,8 @@ app.post("/newRequirment", jdPdfUpload.single('jdPdf'), async(req,res)=>{
 app.get('/getrequirements', async (req, res) => {
     try {
       const requirements = await NewRequirment.find();
-      res.json(requirements);
+      const enriched = await enrichRequirementsWithClientNames(requirements);
+      res.json(enriched);
     } catch (err) {
       res.json({ status: "Error", msg: err.message });
     }
@@ -788,7 +805,8 @@ app.get('/getrequirements', async (req, res) => {
         const teamIds = user.Team || [];
 
         if (!teamIds.length) {
-            const result = allRequirements.map((req) => ({
+            const enrichedRequirements = await enrichRequirementsWithClientNames(allRequirements);
+            const result = enrichedRequirements.map((req) => ({
                 requirement: req,
                 requirementSource: req.requirementSource || 'Assigned',
                 assignedCount: 0,
@@ -822,7 +840,9 @@ app.get('/getrequirements', async (req, res) => {
             return acc;
         }, {});
 
-        const result = allRequirements.map((req) => ({
+        const enrichedRequirements = await enrichRequirementsWithClientNames(allRequirements);
+
+        const result = enrichedRequirements.map((req) => ({
             requirement: req,
             requirementSource: req.requirementSource || 'Assigned',
             assignedCount: assignedCountByReq[req._id.toString()] || 0,
@@ -856,7 +876,8 @@ app.get('/getrequirements', async (req, res) => {
             requirements = await getRequirementsForUser(user, { lean: true });
         }
 
-        const enriched = await enrichRequirementsWorkflow(requirements, user);
+        const requirementsWithClientNames = await enrichRequirementsWithClientNames(requirements);
+        const enriched = await enrichRequirementsWorkflow(requirementsWithClientNames, user);
         res.json(enriched);
     } catch (err) {
         res.status(500).json({ status: "Error", msg: err.message });
@@ -879,12 +900,14 @@ app.get('/getrequirements/:id', async (req, res) => {
                 return res.status(403).json({ status: "Error", msg: "You do not have access to this requirement." });
             }
             if (user) {
-                const enriched = await enrichRequirementWorkflow(requirement, user);
+                const withClientName = await enrichRequirementWithClientName(requirement);
+                const enriched = await enrichRequirementWorkflow(withClientName, user);
                 return res.status(200).json(enriched);
             }
         }
 
-        res.status(200).json(requirement);
+        const withClientName = await enrichRequirementWithClientName(requirement);
+        res.status(200).json(withClientName);
     } catch (err) {
         console.error(err.message);
         res.status(500).json({ status: "Error", msg: "Server Error" });
@@ -955,7 +978,8 @@ app.get("/actions/:id/:userid", async (req, res) => {
         }
 
         // Send the requirement data as response
-        const enriched = await enrichRequirementWorkflow(requirement, user);
+        const requirementWithClientName = await enrichRequirementWithClientName(requirement);
+        const enriched = await enrichRequirementWorkflow(requirementWithClientName, user);
         res.json(enriched);
     } catch (error) {
         console.error('Error fetching requirement:', error);
@@ -1070,6 +1094,16 @@ app.post('/Candidates', uploadFields, async (req, res) => {
             candidateData = JSON.parse(candidate);
         } catch (parseError) {
             throw new Error('Failed to parse candidate data: ' + parseError.message);
+        }
+
+        candidateData.lwd = String(candidateData.lwd || '').trim();
+        candidateData.feedback = String(candidateData.feedback || '').trim();
+
+        if (!candidateData.lwd) {
+            return res.status(400).json({ message: 'LWD is required.' });
+        }
+        if (!candidateData.feedback) {
+            return res.status(400).json({ message: 'Recruiter Feedback is required.' });
         }
 
         // Attach file paths if they exist and ensure proper formatting
@@ -2397,12 +2431,15 @@ app.put('/editRequirement/:id', jdPdfUpload.single('jdPdf'), async (req, res) =>
             }
         }
 
+        await resolveRequirementClientUpdate(updateData);
+
         const updatedRequirement = await NewRequirment.findByIdAndUpdate(id, updateData, {
             new: true,
             runValidators: true,
         });
 
-        res.status(200).json(updatedRequirement);
+        const enrichedRequirement = await enrichRequirementWithClientName(updatedRequirement);
+        res.status(200).json(enrichedRequirement);
     } catch (error) {
         if (req.file) deleteJdFileIfExists(buildJdPublicPath(req.file));
         console.error('Error updating requirement:', error);
@@ -2586,9 +2623,10 @@ app.get('/admingetrequirements', async (req, res) => {
             CandidateModel.find(),
         ]);
 
+        const requirementsWithClientNames = await enrichRequirementsWithClientNames(requirements);
         const creatorInfoMap = buildCreatorInfoMap(allUsers);
 
-        const enrichedRequirements = requirements.map((requirement) => {
+        const enrichedRequirements = requirementsWithClientNames.map((requirement) => {
             const clientId = requirement.clientId;
             const reqId = requirement._id.toString();
 
@@ -2605,7 +2643,7 @@ app.get('/admingetrequirements', async (req, res) => {
             const creatorInfo = creatorInfoMap[creatorId] || { name: '—', userType: '' };
 
             return {
-                ...requirement.toObject(),
+                ...(requirement.toObject ? requirement.toObject() : requirement),
                 creatorName: creatorInfo.name,
                 creatorUserType: creatorInfo.userType,
                 requirementSource: creatorInfo.name,
@@ -2660,9 +2698,11 @@ app.get('/admingetrequirements/:id', async (req, res) => {
             };
         });
 
+        const requirementWithClientName = await enrichRequirementWithClientName(requirement);
+
         // Create an enriched response with requirement details and user data
         const enrichedRequirement = {
-            ...requirement._doc, // Spread the requirement details
+            ...requirementWithClientName,
             userDetails // Add the filtered user details
         };
 

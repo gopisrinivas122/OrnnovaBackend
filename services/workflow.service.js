@@ -1,4 +1,5 @@
 const NewRequirment = require('../models/Requirement');
+const { enrichRequirementsWithClientNames } = require('../utils/requirementClient');
 const NewUser = require('../models/User');
 const CandidateModel = require('../models/Candidate');
 const {
@@ -272,11 +273,13 @@ function computeNotifications(rows, reqMap, userMap, scope, user) {
 }
 
 async function loadWorkflowData() {
-  const [requirements, users, candidateDocs] = await Promise.all([
+  const [rawRequirements, users, candidateDocs] = await Promise.all([
     NewRequirment.find().lean(),
     NewUser.find().lean(),
     CandidateModel.find().lean(),
   ]);
+
+  const requirements = await enrichRequirementsWithClientNames(rawRequirements);
 
   const rows = flattenUploadedCandidates(candidateDocs);
   const reqMap = buildRequirementMap(requirements);

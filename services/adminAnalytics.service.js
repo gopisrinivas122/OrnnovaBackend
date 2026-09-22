@@ -15,6 +15,7 @@ const {
   isRequirementWorkBlocked,
   normalizeRequirementType,
 } = require('../utils/requirementType');
+const { enrichRequirementsWithClientNames } = require('../utils/requirementClient');
 
 function getActiveOpenRequirements(requirements = []) {
   return requirements.filter((req) => {
@@ -479,11 +480,13 @@ async function getAdminAnalytics(filters = {}) {
     toDate: filters.statsToDate || filters.cardsToDate || getDefaultCardStatsDateRange().toDate,
   };
 
-  const [requirements, users, candidateDocs] = await Promise.all([
+  const [rawRequirements, users, candidateDocs] = await Promise.all([
     NewRequirment.find().lean(),
     NewUser.find({ UserType: { $in: ['User', 'TeamLead'] } }).lean(),
     CandidateModel.find().lean(),
   ]);
+
+  const requirements = await enrichRequirementsWithClientNames(rawRequirements);
 
   const rows = flattenUploadedCandidates(candidateDocs);
   const reqMap = buildRequirementMap(requirements);
