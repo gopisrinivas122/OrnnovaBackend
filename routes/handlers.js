@@ -103,6 +103,7 @@ const {
   deleteJdFileIfExists,
 } = require('../utils/requirementJd');
 const { getRejectedCandidatesReport } = require('../services/rejectedCandidates.service');
+const { getMySourcedProfiles } = require('../services/mySourcedProfiles.service');
 const {
   isRejectedStatus,
   getRejectionStageLabel,
@@ -1631,6 +1632,10 @@ app.put('/candidates/:id', async (req, res) => {
             return res.status(404).json({ message: 'Candidate not found in the array' });
         }
 
+        if (Object.prototype.hasOwnProperty.call(updateData, 'lwd')) {
+            updateData.lwd = String(updateData.lwd ?? '').trim();
+        }
+
         // Update the candidate details
         mainDoc.candidates[candidateIndex] = { ...mainDoc.candidates[candidateIndex]._doc, ...updateData };
 
@@ -3028,6 +3033,20 @@ app.get('/api/work/today-monitor/:userId', asyncHandler(async (req, res) => {
 app.get('/api/work/recruiter-log/:userId', asyncHandler(async (req, res) => {
     const { from, to } = req.query;
     const data = await getRecruiterWorkLogForUser(req.params.userId, from, to);
+    if (data.status === 'Error') {
+        return res.status(404).json(data);
+    }
+    res.json(data);
+}));
+
+app.get('/api/profiles/my-sourced', asyncHandler(async (req, res) => {
+    const authenticatedUserId = req.user?.id;
+    if (!authenticatedUserId) {
+        return res.status(401).json({ status: 'Failed', msg: 'Authentication required.' });
+    }
+
+    const { startDate, endDate } = req.query;
+    const data = await getMySourcedProfiles(authenticatedUserId, { startDate, endDate });
     if (data.status === 'Error') {
         return res.status(404).json(data);
     }
