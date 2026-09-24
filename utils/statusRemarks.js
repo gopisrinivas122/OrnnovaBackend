@@ -131,6 +131,8 @@ function appendRemarkToStatusEntry(statusEntry, remarkText) {
 }
 
 module.exports = {
+  compareStatusHistoryEntries,
+  sortStatusHistoryChronologically,
   getStatusRemarkEntries,
   getLatestStatusEntry,
   serializeStatusEntry,

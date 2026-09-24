@@ -10,6 +10,8 @@ const { validateObjectId, isValidObjectId } = require('../middleware/validateObj
 const { upload, uploadFields, jdPdfUpload } = require('../config/multer');
 const { sendEmailSafely } = require('../config/mail');
 const { getAdminAnalytics, computeRequirementFunnel, flattenUploadedCandidates } = require('../services/adminAnalytics.service');
+const { getEmployeeWorkSummary } = require('../services/employeeWorkSummary.service');
+const { authorizeRoles } = require('../middleware/auth');
 const { checkDuplicateCandidate } = require('../services/candidateDuplicate.service');
 const {
   getTodayMonitorForUser,
@@ -2772,6 +2774,23 @@ app.get('/api/admin/analytics', asyncHandler(async (req, res) => {
         statsFromDate: statsFrom || '',
         statsToDate: statsTo || '',
     });
+    res.json(data);
+}));
+
+app.get('/api/admin/employee-work-summary', authorizeRoles('Admin'), asyncHandler(async (req, res) => {
+    const { startDate, endDate, employeeId, metric } = req.query;
+    const data = await getEmployeeWorkSummary({
+        startDate: startDate || '',
+        endDate: endDate || '',
+        employeeId: employeeId ? String(employeeId).trim() : '',
+        metric: metric ? String(metric).trim() : '',
+    });
+
+    if (data.status === 'Error') {
+        const statusCode = data.msg === 'Employee not found.' || data.msg === 'Invalid employee.' ? 404 : 400;
+        return res.status(statusCode).json(data);
+    }
+
     res.json(data);
 }));
 

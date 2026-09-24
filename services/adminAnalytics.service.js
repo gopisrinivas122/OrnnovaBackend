@@ -513,4 +513,10 @@ module.exports = {
   flattenUploadedCandidates,
   buildRequirementMap,
   computeProfilesSourcedReport,
+  isDateInRange,
+  isUploadedOnInRange,
+  resolveUploaderIds,
+  resolvePrimaryUploaderId,
+  formatRequirementDrillDownRow,
+  formatCandidateDrillDownRow,
 };
