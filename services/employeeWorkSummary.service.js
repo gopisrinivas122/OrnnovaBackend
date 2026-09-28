@@ -2,6 +2,7 @@ const NewRequirment = require('../models/Requirement');
 const NewUser = require('../models/User');
 const CandidateModel = require('../models/Candidate');
 const { isValidObjectId } = require('../middleware/validateObjectId');
+const { activeUserFilter, isActiveUser } = require('../utils/userStatus');
 const { enrichRequirementsWithClientNames } = require('../utils/requirementClient');
 const {
   flattenUploadedCandidates,
@@ -18,6 +19,7 @@ const WORK_SUMMARY_METRICS = {
   ornnovaScreenSelected: 'ornnovaScreenSelected',
   l1Select: 'l1Select',
   l2Select: 'l2Select',
+  offerReleased: 'offerReleased',
   joined: 'joined',
   declined: 'declined',
 };
@@ -26,6 +28,7 @@ const STATUS_BY_METRIC = {
   [WORK_SUMMARY_METRICS.ornnovaScreenSelected]: 'Ornnova Screen Selected',
   [WORK_SUMMARY_METRICS.l1Select]: 'L1 Selected',
   [WORK_SUMMARY_METRICS.l2Select]: 'L2 Selected',
+  [WORK_SUMMARY_METRICS.offerReleased]: 'Offer Released',
   [WORK_SUMMARY_METRICS.joined]: 'Joined',
   [WORK_SUMMARY_METRICS.declined]: 'Declined',
 };
@@ -143,6 +146,7 @@ function buildEmployeeSummaryRow(user, requirements, rows, reqMap, startDate, en
     ornnovaScreenSelected: 0,
     l1Select: 0,
     l2Select: 0,
+    offerReleased: 0,
     joined: 0,
     declined: 0,
   };
@@ -172,6 +176,7 @@ function rowHasAnyActivity(summaryRow) {
     || summaryRow.ornnovaScreenSelected > 0
     || summaryRow.l1Select > 0
     || summaryRow.l2Select > 0
+    || summaryRow.offerReleased > 0
     || summaryRow.joined > 0
     || summaryRow.declined > 0
   );
@@ -207,8 +212,11 @@ async function getEmployeeWorkSummary({ startDate, endDate, employeeId, metric }
 
   const [rawRequirements, users, candidateDocs] = await Promise.all([
     NewRequirment.find().lean(),
-    NewUser.find({ UserType: { $in: ['User', 'TeamLead'] } })
-      .select('_id EmployeeName UserType')
+    NewUser.find({
+      UserType: { $in: ['User', 'TeamLead'] },
+      ...activeUserFilter,
+    })
+      .select('_id EmployeeName UserType Status')
       .lean(),
     CandidateModel.find().lean(),
   ]);
@@ -217,7 +225,9 @@ async function getEmployeeWorkSummary({ startDate, endDate, employeeId, metric }
   const rows = flattenUploadedCandidates(candidateDocs);
   const reqMap = buildRequirementMap(requirements);
 
-  const employeeOptions = users
+  const activeUsers = users.filter(isActiveUser);
+
+  const employeeOptions = activeUsers
     .map((user) => ({
       id: user._id.toString(),
       name: user.EmployeeName || '—',
@@ -225,12 +235,12 @@ async function getEmployeeWorkSummary({ startDate, endDate, employeeId, metric }
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  let scopedUsers = users;
+  let scopedUsers = activeUsers;
   if (employeeId) {
     if (!isValidObjectId(employeeId)) {
       return { status: 'Error', msg: 'Invalid employee.' };
     }
-    scopedUsers = users.filter((user) => user._id.toString() === String(employeeId));
+    scopedUsers = activeUsers.filter((user) => user._id.toString() === String(employeeId));
     if (!scopedUsers.length) {
       return { status: 'Error', msg: 'Employee not found.' };
     }
