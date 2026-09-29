@@ -9,7 +9,12 @@ const asyncHandler = require('../middleware/asyncHandler');
 const { validateObjectId, isValidObjectId } = require('../middleware/validateObjectId');
 const { upload, uploadFields, jdPdfUpload } = require('../config/multer');
 const { sendEmailSafely } = require('../config/mail');
-const { getAdminAnalytics, computeRequirementFunnel, flattenUploadedCandidates } = require('../services/adminAnalytics.service');
+const {
+  getAdminAnalytics,
+  getRecruiterTlRequirementDetails,
+  computeRequirementFunnel,
+  flattenUploadedCandidates,
+} = require('../services/adminAnalytics.service');
 const { getEmployeeWorkSummary } = require('../services/employeeWorkSummary.service');
 const { authorizeRoles } = require('../middleware/auth');
 const { checkDuplicateCandidate } = require('../services/candidateDuplicate.service');
@@ -2489,12 +2494,8 @@ app.get('/api/requirements/:id/jd', async (req, res) => {
 app.put('/updatestatus/:candidateId', async (req, res) => {
     const candidateId = req.params.candidateId;
     const { status, interviewDate, interviewTime, remark, updatedBy } = req.body;
-    const INTERVIEW_SCHEDULE_STATUSES = ['L1 Schedule', 'L2 Schedule', 'L3 Schedule', 'L1 Pending', 'L2 Pending'];
-    const normalizedStatus = status === 'L1 Pending'
-        ? 'L1 Schedule'
-        : status === 'L2 Pending'
-            ? 'L2 Schedule'
-            : status;
+    const INTERVIEW_SCHEDULE_STATUSES = ['L1 Schedule', 'L2 Schedule', 'L3 Schedule'];
+    const statusToPersist = status;
 
     if (!status) {
         return res.status(400).json({ message: 'Status is required' });
@@ -2506,7 +2507,7 @@ app.put('/updatestatus/:candidateId', async (req, res) => {
 
     if (INTERVIEW_SCHEDULE_STATUSES.includes(status) && !interviewDate) {
         return res.status(400).json({
-            message: 'Interview date is required when status is L1 Schedule or L2 Schedule.',
+            message: 'Interview date is required when status is L1 Schedule, L2 Schedule, or L3 Schedule.',
         });
     }
 
@@ -2515,7 +2516,7 @@ app.put('/updatestatus/:candidateId', async (req, res) => {
         const updateOps = {
             $push: {
                 'candidates.$.Status': {
-                    Status: normalizedStatus,
+                    Status: statusToPersist,
                     Date: new Date(),
                     Remark: trimmedRemark,
                     Remarks: [{ text: trimmedRemark, createdAt: new Date() }],
@@ -2531,11 +2532,11 @@ app.put('/updatestatus/:candidateId', async (req, res) => {
             updateOps.$set['candidates.$.interviewTime'] = interviewTime || '';
         }
 
-        if (isRejectedStatus(normalizedStatus)) {
+        if (isRejectedStatus(statusToPersist)) {
             const rejectedByUser = updatedBy
                 ? await NewUser.findById(updatedBy).select('EmployeeName').lean()
                 : null;
-            updateOps.$set['candidates.$.rejectionStage'] = getRejectionStageLabel(normalizedStatus);
+            updateOps.$set['candidates.$.rejectionStage'] = getRejectionStageLabel(statusToPersist);
             updateOps.$set['candidates.$.rejectedDate'] = new Date();
             updateOps.$set['candidates.$.rejectedBy'] = updatedBy ? String(updatedBy) : '';
             updateOps.$set['candidates.$.rejectedByName'] = rejectedByUser?.EmployeeName || '';
@@ -2557,7 +2558,7 @@ app.put('/updatestatus/:candidateId', async (req, res) => {
         res.status(200).json({
             message: 'Status updated successfully ✅',
             candidateId: String(candidateId),
-            status: normalizedStatus,
+            status: statusToPersist,
             candidate: serializeCandidateForResponse(updatedCandidate),
             mainDocument: updatedMain,
         });
@@ -2774,6 +2775,22 @@ app.get('/api/admin/analytics', asyncHandler(async (req, res) => {
         statsFromDate: statsFrom || '',
         statsToDate: statsTo || '',
     });
+    res.json(data);
+}));
+
+app.get('/api/admin/recruiter-tl-requirement-details', authorizeRoles('Admin'), asyncHandler(async (req, res) => {
+    const { startDate, endDate, employeeId } = req.query;
+    const data = await getRecruiterTlRequirementDetails({
+        startDate: startDate || '',
+        endDate: endDate || '',
+        employeeId: employeeId ? String(employeeId).trim() : '',
+    });
+
+    if (data.status === 'Error') {
+        const statusCode = data.msg === 'Employee not found.' || data.msg === 'Invalid employee.' ? 404 : 400;
+        return res.status(statusCode).json(data);
+    }
+
     res.json(data);
 }));
 

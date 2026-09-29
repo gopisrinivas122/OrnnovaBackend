@@ -24,13 +24,14 @@ const WORK_SUMMARY_METRICS = {
   declined: 'declined',
 };
 
-const STATUS_BY_METRIC = {
-  [WORK_SUMMARY_METRICS.ornnovaScreenSelected]: 'Ornnova Screen Selected',
-  [WORK_SUMMARY_METRICS.l1Select]: 'L1 Selected',
-  [WORK_SUMMARY_METRICS.l2Select]: 'L2 Selected',
-  [WORK_SUMMARY_METRICS.offerReleased]: 'Offer Released',
-  [WORK_SUMMARY_METRICS.joined]: 'Joined',
-  [WORK_SUMMARY_METRICS.declined]: 'Declined',
+/** Stored status values counted for each metric (exact match on history entries). */
+const STATUS_LABELS_BY_METRIC = {
+  [WORK_SUMMARY_METRICS.ornnovaScreenSelected]: ['Ornnova Screen Selected'],
+  [WORK_SUMMARY_METRICS.l1Select]: ['L1 Selected'],
+  [WORK_SUMMARY_METRICS.l2Select]: ['L2 Selected'],
+  [WORK_SUMMARY_METRICS.offerReleased]: ['Offer Released'],
+  [WORK_SUMMARY_METRICS.joined]: ['Joined'],
+  [WORK_SUMMARY_METRICS.declined]: ['Declined', 'Candidate Declined'],
 };
 
 function sortStatusHistoryChronologically(statusHistory = []) {
@@ -61,15 +62,24 @@ function getStatusHistory(candidate) {
   return sortStatusHistoryChronologically(list);
 }
 
-function getStatusEventsInRange(candidate, statusLabel, startDate, endDate) {
+function normalizeStatusLabels(statusLabels) {
+  if (Array.isArray(statusLabels)) return statusLabels;
+  if (statusLabels) return [statusLabels];
+  return [];
+}
+
+function getStatusEventsInRange(candidate, statusLabels, startDate, endDate) {
+  const labelSet = new Set(normalizeStatusLabels(statusLabels));
+  if (!labelSet.size) return [];
+
   return getStatusHistory(candidate).filter((entry) => {
-    if (entry?.Status !== statusLabel) return false;
+    if (!labelSet.has(entry?.Status)) return false;
     return isDateInRange(entry?.Date, startDate, endDate);
   });
 }
 
-function candidateHasStatusEventInRange(candidate, statusLabel, startDate, endDate) {
-  return getStatusEventsInRange(candidate, statusLabel, startDate, endDate).length > 0;
+function candidateHasStatusEventInRange(candidate, statusLabels, startDate, endDate) {
+  return getStatusEventsInRange(candidate, statusLabels, startDate, endDate).length > 0;
 }
 
 function resolveUploadedOn(candidate) {
@@ -124,16 +134,17 @@ function listProfilesSourcedForEmployee(rows, reqMap, employeeId, startDate, end
 }
 
 function listStatusMetricForEmployee(rows, reqMap, employeeId, metricKey, startDate, endDate) {
-  const statusLabel = STATUS_BY_METRIC[metricKey];
-  if (!statusLabel) return [];
+  const statusLabels = STATUS_LABELS_BY_METRIC[metricKey];
+  if (!statusLabels?.length) return [];
 
   const results = [];
   rows.forEach((row) => {
     if (!candidateOwnedByUser(row.candidate, row.recruiterIds, employeeId)) return;
-    const events = getStatusEventsInRange(row.candidate, statusLabel, startDate, endDate);
+    const events = getStatusEventsInRange(row.candidate, statusLabels, startDate, endDate);
     if (!events.length) return;
     const latestEvent = events[events.length - 1];
-    results.push(formatStatusMetricRow(row, reqMap, statusLabel, latestEvent?.Date || null));
+    const displayStatus = latestEvent?.Status || statusLabels[0];
+    results.push(formatStatusMetricRow(row, reqMap, displayStatus, latestEvent?.Date || null));
   });
   return results;
 }
@@ -154,8 +165,8 @@ function buildEmployeeSummaryRow(user, requirements, rows, reqMap, startDate, en
   rows.forEach((row) => {
     if (!candidateOwnedByUser(row.candidate, row.recruiterIds, employeeId)) return;
 
-    Object.entries(STATUS_BY_METRIC).forEach(([metricKey, statusLabel]) => {
-      if (candidateHasStatusEventInRange(row.candidate, statusLabel, startDate, endDate)) {
+    Object.entries(STATUS_LABELS_BY_METRIC).forEach(([metricKey, statusLabels]) => {
+      if (candidateHasStatusEventInRange(row.candidate, statusLabels, startDate, endDate)) {
         metrics[metricKey] += 1;
       }
     });

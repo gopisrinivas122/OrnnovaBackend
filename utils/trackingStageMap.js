@@ -26,18 +26,16 @@ function getLastStatusDate(candidate) {
   return statusList[statusList.length - 1]?.Date || null;
 }
 
-function normalizePipelineStatus(status) {
-  if (status === 'L1 Pending') return 'L1 Schedule';
-  if (status === 'L2 Pending') return 'L2 Schedule';
-  return status;
-}
-
 function isL1ScheduleStatus(status) {
-  return status === 'L1 Schedule' || status === 'L1 Pending';
+  return status === 'L1 Schedule'
+    || status === 'L1 Pending'
+    || status === 'L1 To be Schedule';
 }
 
 function isL2ScheduleStatus(status) {
-  return status === 'L2 Schedule' || status === 'L2 Pending';
+  return status === 'L2 Schedule'
+    || status === 'L2 Pending'
+    || status === 'L2 To be Schedule';
 }
 
 function matchesStage(stageKey, status, candidate) {

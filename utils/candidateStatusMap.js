@@ -16,6 +16,15 @@ const LEGACY_PRESENT_INTERVIEW_STATUS_MAP = {
   'L2 Pending': 'L2 Schedule',
 };
 
+const STATUSES_WITHOUT_INTERVIEW_DATE = new Set([
+  'L1 Pending',
+  'L2 Pending',
+  'L3 Pending',
+  'L1 To be Schedule',
+  'L2 To be Schedule',
+  'L3 To be Schedule',
+]);
+
 /** Admin Dashboard Present Interviews — canonical positive/current statuses only. */
 const PRESENT_INTERVIEW_STATUSES = new Set([
   'Selected',
@@ -34,6 +43,7 @@ const PRESENT_INTERVIEW_STATUSES = new Set([
 
 function isPresentInterviewStatus(status) {
   if (!status) return false;
+  if (STATUSES_WITHOUT_INTERVIEW_DATE.has(status)) return true;
   const normalized = LEGACY_PRESENT_INTERVIEW_STATUS_MAP[status] || status;
   return PRESENT_INTERVIEW_STATUSES.has(normalized);
 }
@@ -69,10 +79,15 @@ const STATUS_RANK = {
   'Client Rejected': 3,
   'L1 Schedule': 4,
   'L1 Pending': 4,
+  'L1 To be Schedule': 4,
   'L1 Selected': 5,
   'L1 Rejected': 4,
   'L2 Schedule': 6,
   'L2 Pending': 6,
+  'L2 To be Schedule': 6,
+  'L3 Schedule': 6,
+  'L3 Pending': 6,
+  'L3 To be Schedule': 6,
   'L2 Selected': 7,
   'L2 Rejected': 6,
   'Selected': 7,
