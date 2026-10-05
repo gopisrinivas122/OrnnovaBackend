@@ -58,6 +58,33 @@ function getProfileUploadEnabled(requirement, userId) {
   return getManualProfileUploadEnabled(requirement, userId);
 }
 
+/**
+ * Display + API fields for per-user upload Stop/Start (employee + requirement).
+ * Preserves manualProfileUploadEnabled from DB; effective fields drive UI badge/action.
+ */
+function computeUploadDisplayState(requirement, userId, currentlyAssigned) {
+  const manualProfileUploadEnabled = getManualProfileUploadEnabled(requirement, userId);
+  const assigned = Boolean(currentlyAssigned);
+
+  if (!assigned) {
+    return {
+      currentlyAssigned: false,
+      manualProfileUploadEnabled,
+      effectiveProfileUploadEnabled: false,
+      profileUploadEnabled: false,
+      uploadAction: 'stop',
+    };
+  }
+
+  return {
+    currentlyAssigned: true,
+    manualProfileUploadEnabled,
+    effectiveProfileUploadEnabled: manualProfileUploadEnabled,
+    profileUploadEnabled: manualProfileUploadEnabled,
+    uploadAction: manualProfileUploadEnabled ? 'stop' : 'start',
+  };
+}
+
 async function setProfileUploadEnabled(requirementId, userId, enabled) {
   const reqId = normalizeId(requirementId);
   const uid = normalizeId(userId);
@@ -111,11 +138,9 @@ function attachProfileUploadEnabled(requirement, users = []) {
   return users.map((user) => {
     const plain = user?.toObject ? user.toObject() : { ...user };
     const userId = normalizeId(plain._id || plain.userId);
-    const manualProfileUploadEnabled = getManualProfileUploadEnabled(requirement, userId);
     return {
       ...plain,
-      manualProfileUploadEnabled,
-      profileUploadEnabled: manualProfileUploadEnabled,
+      ...computeUploadDisplayState(requirement, userId, true),
     };
   });
 }
@@ -125,6 +150,7 @@ module.exports = {
   sanitizeUserUploadSettings,
   getManualProfileUploadEnabled,
   getProfileUploadEnabled,
+  computeUploadDisplayState,
   setProfileUploadEnabled,
   removeUserUploadSetting,
   attachProfileUploadEnabled,

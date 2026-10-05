@@ -3,6 +3,7 @@ const NewRequirment = require('../models/Requirement');
 const NewUser = require('../models/User');
 const { isValidObjectId } = require('../middleware/validateObjectId');
 const { serializeCandidateStatusHistory } = require('../utils/statusRemarks');
+const { candidateOwnedByUser } = require('../utils/candidateOwnership.util');
 
 function parseDateBoundary(value, endOfDay = false) {
   if (!value) return null;
@@ -27,15 +28,6 @@ function isUploadedOnInRange(uploadedOn, startDate, endDate) {
   if (from && date < from) return false;
   if (to && date > to) return false;
   return true;
-}
-
-function candidateOwnedByUser(candidate, docRecruiterIds, userId) {
-  const uid = String(userId);
-  const candidateRecruiters = Array.isArray(candidate?.recruiterId)
-    ? candidate.recruiterId.map(String)
-    : [];
-  if (candidateRecruiters.includes(uid)) return true;
-  return (docRecruiterIds || []).map(String).includes(uid);
 }
 
 async function getMySourcedProfiles(authenticatedUserId, { startDate, endDate } = {}) {

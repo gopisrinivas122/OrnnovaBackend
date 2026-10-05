@@ -11,6 +11,10 @@ const {
   parseInterviewDate,
 } = require('../utils/candidateStatusMap');
 const { getExcludedRequirementIdSet } = require('../utils/teamLeadRequirements');
+const {
+  listPersistedNotificationsForUser,
+  countUnreadPersistedNotifications,
+} = require('./statusRemarkNotification.service');
 
 const PENDING_STATUSES = new Set([
   'Ornnova Screen Selected',
@@ -227,6 +231,7 @@ function computeNotifications(rows, reqMap, userMap, scope, user) {
       link: '/work/today',
       createdAt: today.toISOString(),
       unread: true,
+      persisted: false,
     });
   }
 
@@ -241,6 +246,7 @@ function computeNotifications(rows, reqMap, userMap, scope, user) {
       link: '/work/interviews',
       createdAt: today.toISOString(),
       unread: true,
+      persisted: false,
     });
   }
 
@@ -254,6 +260,7 @@ function computeNotifications(rows, reqMap, userMap, scope, user) {
       link: '/work/interviews',
       createdAt: today.toISOString(),
       unread: true,
+      persisted: false,
     });
   }
 
@@ -270,6 +277,7 @@ function computeNotifications(rows, reqMap, userMap, scope, user) {
         link: '/team/profiles',
         createdAt: today.toISOString(),
         unread: true,
+        persisted: false,
       });
     }
   }
@@ -463,12 +471,25 @@ async function getNotificationsForUser(userId) {
   }
 
   const scope = buildScope(user, requirements);
-  const notifications = computeNotifications(rows, reqMap, userMap, scope, user);
+  const computedNotifications = computeNotifications(rows, reqMap, userMap, scope, user);
+  const [persistedNotifications, todayUnreadCount] = await Promise.all([
+    listPersistedNotificationsForUser(userId, 10),
+    countUnreadPersistedNotifications(userId, { todayOnly: true }),
+  ]);
+
+  const seenIds = new Set();
+  const notifications = [...persistedNotifications, ...computedNotifications].filter((item) => {
+    if (!item?.id || seenIds.has(item.id)) return false;
+    seenIds.add(item.id);
+    return true;
+  }).slice(0, 12);
 
   return {
     status: 'Success',
     generatedAt: new Date().toISOString(),
-    unreadCount: notifications.filter((item) => item.unread).length,
+    unreadCount: todayUnreadCount,
+    todayUnreadCount,
+    persistedUnreadCount: todayUnreadCount,
     notifications,
   };
 }

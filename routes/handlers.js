@@ -11,11 +11,18 @@ const { upload, uploadFields, jdPdfUpload } = require('../config/multer');
 const { sendEmailSafely } = require('../config/mail');
 const {
   getAdminAnalytics,
+  getAdminSourceProfiles,
   getRecruiterTlRequirementDetails,
   computeRequirementFunnel,
   flattenUploadedCandidates,
 } = require('../services/adminAnalytics.service');
 const { getEmployeeWorkSummary } = require('../services/employeeWorkSummary.service');
+const {
+  createStatusRemarkNotifications,
+  markNotificationAsRead,
+  markAllNotificationsAsRead,
+  countUnreadPersistedNotifications,
+} = require('../services/statusRemarkNotification.service');
 const { authorizeRoles } = require('../middleware/auth');
 const { checkDuplicateCandidate } = require('../services/candidateDuplicate.service');
 const {
@@ -99,6 +106,7 @@ const { validateAssessments } = require('../utils/requirementAssessments');
 const {
   getManualProfileUploadEnabled,
   getProfileUploadEnabled,
+  computeUploadDisplayState,
   setProfileUploadEnabled,
   removeUserUploadSetting,
   attachProfileUploadEnabled,
@@ -117,6 +125,7 @@ const {
   getLatestStatus,
   isActiveCandidate,
 } = require('../utils/candidateStatusMap');
+const { candidateOwnedByUser } = require('../utils/candidateOwnership.util');
 
 module.exports = (app) => {
  app.get("/loggedinuserdata/:email", asyncHandler(async (req, res) => {
@@ -1395,6 +1404,60 @@ function serializeCandidateList(candidates = []) {
     .filter(Boolean);
 }
 
+async function buildRecruitersWithCandidatesForRequirement(requirements, reqId, options = {}) {
+  const { ownerUserId = null, uploadedOnly = false } = options;
+  const ownerId = ownerUserId ? String(ownerUserId) : null;
+
+  const recruiterIdToCandidateCount = {};
+  const recruiterIdToCandidates = {};
+
+  requirements.forEach((requirement) => {
+    const docRecruiterIds = Array.isArray(requirement.recruiterId) ? requirement.recruiterId : [];
+    let candidates = requirement.candidates || [];
+    if (uploadedOnly) {
+      candidates = candidates.filter((candidate) => candidate.savedStatus === 'Uploaded');
+    }
+
+    candidates.forEach((candidate) => {
+      if (ownerId && !candidateOwnedByUser(candidate, docRecruiterIds, ownerId)) {
+        return;
+      }
+
+      const recruiterIds = ownerId
+        ? [ownerId]
+        : (Array.isArray(candidate.recruiterId) ? candidate.recruiterId.map(String) : []);
+
+      recruiterIds.forEach((recruiterId) => {
+        recruiterIdToCandidateCount[recruiterId] = (recruiterIdToCandidateCount[recruiterId] || 0) + 1;
+
+        if (!recruiterIdToCandidates[recruiterId]) {
+          recruiterIdToCandidates[recruiterId] = [];
+        }
+        recruiterIdToCandidates[recruiterId].push(
+          serializeCandidateForResponse(candidate),
+        );
+      });
+    });
+  });
+
+  const recruiterIds = Object.keys(recruiterIdToCandidateCount);
+  if (recruiterIds.length === 0) {
+    return null;
+  }
+
+  const recruitersDetails = await NewUser.find({ _id: { $in: recruiterIds } }).exec();
+  if (recruitersDetails.length === 0) {
+    return null;
+  }
+
+  return recruitersDetails.map((recruiter) => ({
+    recruiter,
+    candidateCount: recruiterIdToCandidateCount[recruiter._id.toString()],
+    candidates: recruiterIdToCandidates[recruiter._id.toString()] || [],
+    reqId,
+  }));
+}
+
 // Get the number of candidates added by each recruiter for a specific reqId
 app.get('/api/recruiters/:reqId', async (req, res) => {
     const { reqId } = req.params;
@@ -1410,49 +1473,15 @@ app.get('/api/recruiters/:reqId', async (req, res) => {
             return res.status(404).json({ message: 'Requirement(s) not found' });
         }
 
-        const recruiterIdToCandidateCount = {};
-        const recruiterIdToCandidates = {}; // Object to map recruiterId to candidate details
+        const recruitersWithCandidateCountAndDetails = await buildRecruitersWithCandidatesForRequirement(
+          requirements,
+          reqId,
+          { uploadedOnly: true },
+        );
 
-        // Iterate through each requirement and its candidates
-        requirements.forEach(requirement => {
-            requirement.candidates
-                .filter(candidate => candidate.savedStatus === 'Uploaded') // Filter candidates by savedStatus
-                .forEach(candidate => {
-                    candidate.recruiterId.forEach(recruiterId => {
-                        // Count only "Uploaded" candidates for each recruiter
-                        recruiterIdToCandidateCount[recruiterId] = (recruiterIdToCandidateCount[recruiterId] || 0) + 1;
-
-                        // Add only "Uploaded" candidate details to the recruiter
-                        if (!recruiterIdToCandidates[recruiterId]) {
-                            recruiterIdToCandidates[recruiterId] = []; // Initialize array for the first time
-                        }
-                        recruiterIdToCandidates[recruiterId].push(
-                            serializeCandidateForResponse(candidate)
-                        );
-                    });
-                });
-        });
-
-        const recruiterIds = Object.keys(recruiterIdToCandidateCount);
-
-        if (recruiterIds.length === 0) {
+        if (!recruitersWithCandidateCountAndDetails) {
             return res.status(404).json({ message: 'No recruiters found for these requirements' });
         }
-
-        // Fetch recruiter details from NewUser collection
-        const recruitersDetails = await NewUser.find({ _id: { $in: recruiterIds } }).exec();
-
-        if (recruitersDetails.length === 0) {
-            return res.status(404).json({ message: 'No details found for recruiters' });
-        }
-
-        // Create the response with recruiter info and associated "Uploaded" candidate details
-        const recruitersWithCandidateCountAndDetails = recruitersDetails.map(recruiter => ({
-            recruiter,
-            candidateCount: recruiterIdToCandidateCount[recruiter._id.toString()],
-            candidates: recruiterIdToCandidates[recruiter._id.toString()] || [], // Include only "Uploaded" candidate details
-            reqId // Include the reqId in the response
-        }));
 
         res.status(200).json({ recruiters: recruitersWithCandidateCountAndDetails });
     } catch (error) {
@@ -1461,12 +1490,20 @@ app.get('/api/recruiters/:reqId', async (req, res) => {
     }
 });
 
-// Expanding of User Uploads
+// Recruiter workbench: profiles for one requirement, scoped to the authenticated recruiter only
 app.get('/userUploads/:reqId/:userId', async (req, res) => {
-    const { reqId } = req.params;
+    const { reqId, userId: userIdParam } = req.params;
 
     if (!reqId) {
         return res.status(400).json({ error: 'reqId is required' });
+    }
+
+    const authenticatedUserId = req.user?.id ? String(req.user.id) : null;
+    if (!authenticatedUserId) {
+        return res.status(401).json({ status: 'Failed', msg: 'Authentication required.' });
+    }
+    if (userIdParam && String(userIdParam) !== authenticatedUserId) {
+        return res.status(403).json({ message: 'You can only view your own uploaded profiles.' });
     }
 
     try {
@@ -1476,49 +1513,15 @@ app.get('/userUploads/:reqId/:userId', async (req, res) => {
             return res.status(404).json({ message: 'Requirement(s) not found' });
         }
 
-        const recruiterIdToCandidateCount = {};
-        const recruiterIdToCandidates = {}; // Object to map recruiterId to candidate details
+        const recruitersWithCandidateCountAndDetails = await buildRecruitersWithCandidatesForRequirement(
+          requirements,
+          reqId,
+          { ownerUserId: authenticatedUserId, uploadedOnly: false },
+        );
 
-        // Iterate through each requirement and its candidates
-        requirements.forEach(requirement => {
-            requirement.candidates
-                // .filter(candidate => candidate.savedStatus === 'Uploaded') // Filter candidates by savedStatus
-                .forEach(candidate => {
-                    candidate.recruiterId.forEach(recruiterId => {
-                        // Count only "Uploaded" candidates for each recruiter
-                        recruiterIdToCandidateCount[recruiterId] = (recruiterIdToCandidateCount[recruiterId] || 0) + 1;
-
-                        // Add only "Uploaded" candidate details to the recruiter
-                        if (!recruiterIdToCandidates[recruiterId]) {
-                            recruiterIdToCandidates[recruiterId] = []; // Initialize array for the first time
-                        }
-                        recruiterIdToCandidates[recruiterId].push(
-                            serializeCandidateForResponse(candidate)
-                        );
-                    });
-                });
-        });
-
-        const recruiterIds = Object.keys(recruiterIdToCandidateCount);
-
-        if (recruiterIds.length === 0) {
+        if (!recruitersWithCandidateCountAndDetails) {
             return res.status(404).json({ message: 'No recruiters found for these requirements' });
         }
-
-        // Fetch recruiter details from NewUser collection
-        const recruitersDetails = await NewUser.find({ _id: { $in: recruiterIds } }).exec();
-
-        if (recruitersDetails.length === 0) {
-            return res.status(404).json({ message: 'No details found for recruiters' });
-        }
-
-        // Create the response with recruiter info and associated "Uploaded" candidate details
-        const recruitersWithCandidateCountAndDetails = recruitersDetails.map(recruiter => ({
-            recruiter,
-            candidateCount: recruiterIdToCandidateCount[recruiter._id.toString()],
-            candidates: recruiterIdToCandidates[recruiter._id.toString()] || [], // Include only "Uploaded" candidate details
-            reqId // Include the reqId in the response
-        }));
 
         res.status(200).json({ recruiters: recruitersWithCandidateCountAndDetails });
     } catch (error) {
@@ -2554,6 +2557,26 @@ app.put('/updatestatus/:candidateId', async (req, res) => {
         }
 
         const updatedCandidate = updatedMain.candidates.id(candidateId);
+        const latestStatusEntry = updatedCandidate?.Status?.length
+            ? updatedCandidate.Status[updatedCandidate.Status.length - 1]
+            : null;
+        const actorId = req.user?.id || updatedBy;
+
+        if (latestStatusEntry && actorId) {
+            try {
+                await createStatusRemarkNotifications({
+                    actorId,
+                    candidate: updatedCandidate,
+                    mainDocument: updatedMain,
+                    requirementId: updatedMain.reqId,
+                    status: statusToPersist,
+                    remark: trimmedRemark,
+                    statusEntryId: latestStatusEntry._id,
+                });
+            } catch (notifyError) {
+                console.error('Status remark notification failed:', notifyError);
+            }
+        }
 
         res.status(200).json({
             message: 'Status updated successfully ✅',
@@ -2694,17 +2717,13 @@ app.get('/admingetrequirements/:id', async (req, res) => {
             Requirements: reqId,
         });
 
-        const userDetails = users.map(user => {
-            const manualProfileUploadEnabled = getManualProfileUploadEnabled(requirement, user._id);
-            return {
-                _id: user._id,
-                name: user.EmployeeName,
-                email: user.Email,
-                userType: user.UserType,
-                manualProfileUploadEnabled,
-                profileUploadEnabled: manualProfileUploadEnabled,
-            };
-        });
+        const userDetails = users.map((user) => ({
+            _id: user._id,
+            name: user.EmployeeName,
+            email: user.Email,
+            userType: user.UserType,
+            ...computeUploadDisplayState(requirement, user._id, true),
+        }));
 
         const requirementWithClientName = await enrichRequirementWithClientName(requirement);
 
@@ -2774,6 +2793,15 @@ app.get('/api/admin/analytics', asyncHandler(async (req, res) => {
         teamLeadId: teamLeadId || '',
         statsFromDate: statsFrom || '',
         statsToDate: statsTo || '',
+    });
+    res.json(data);
+}));
+
+app.get('/api/admin/source-profiles', authorizeRoles('Admin'), asyncHandler(async (req, res) => {
+    const { from, to } = req.query;
+    const data = await getAdminSourceProfiles({
+        fromDate: from || '',
+        toDate: to || '',
     });
     res.json(data);
 }));
@@ -3102,6 +3130,33 @@ app.get('/api/interviews/upcoming', asyncHandler(async (req, res) => {
 app.get('/api/notifications/:userId', asyncHandler(async (req, res) => {
     const data = await getNotificationsForUser(req.params.userId);
     res.json(data);
+}));
+
+app.patch('/api/notifications/:userId/:notificationId/read', asyncHandler(async (req, res) => {
+    const { userId, notificationId } = req.params;
+    const result = await markNotificationAsRead(notificationId, userId);
+    if (!result.ok) {
+        return res.status(result.statusCode || 404).json({ status: 'Error', msg: result.message });
+    }
+    const todayUnreadCount = await countUnreadPersistedNotifications(userId, { todayOnly: true });
+    res.json({
+        status: 'Success',
+        alreadyRead: Boolean(result.alreadyRead),
+        todayUnreadCount,
+        persistedUnreadCount: todayUnreadCount,
+    });
+}));
+
+app.patch('/api/notifications/:userId/read-all', asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const result = await markAllNotificationsAsRead(userId);
+    const todayUnreadCount = await countUnreadPersistedNotifications(userId, { todayOnly: true });
+    res.json({
+        status: 'Success',
+        modifiedCount: result.modifiedCount,
+        todayUnreadCount,
+        persistedUnreadCount: todayUnreadCount,
+    });
 }));
 
 app.patch('/api/candidates/:candidateId/schedule-interview', asyncHandler(async (req, res) => {
