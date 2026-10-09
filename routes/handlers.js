@@ -7,7 +7,16 @@ const NewRequirment = require('../models/Requirement');
 const CandidateModel = require('../models/Candidate');
 const asyncHandler = require('../middleware/asyncHandler');
 const { validateObjectId, isValidObjectId } = require('../middleware/validateObjectId');
-const { upload, uploadFields, jdPdfUpload } = require('../config/multer');
+const { upload, uploadFields, candidateDocumentUpload, jdPdfUpload } = require('../config/multer');
+const {
+  loadCandidateDocumentContext,
+  canUserAccessCandidateDocuments,
+  updateCandidateDocuments,
+  resolveDocumentForDownload,
+  unlinkStoredUploadSafely,
+  toWebUploadPath,
+  ALLOWED_DOCUMENT_FIELDS,
+} = require('../services/candidateDocumentUpdate.service');
 const { sendEmailSafely } = require('../config/mail');
 const {
   getAdminAnalytics,
@@ -1642,6 +1651,13 @@ app.put('/candidates/:id', async (req, res) => {
             return res.status(404).json({ message: 'Candidate not found in the array' });
         }
 
+        const existingCandidate = mainDoc.candidates[candidateIndex];
+        if (getLatestStatus(existingCandidate) !== 'No Action Taken') {
+            return res.status(403).json({
+                message: 'Candidate details can only be edited when status is No Action Taken. Resume and Ornnova profile can be updated from Source Profile Details.',
+            });
+        }
+
         if (Object.prototype.hasOwnProperty.call(updateData, 'lwd')) {
             updateData.lwd = String(updateData.lwd ?? '').trim();
         }
@@ -3158,6 +3174,89 @@ app.patch('/api/notifications/:userId/read-all', asyncHandler(async (req, res) =
         persistedUnreadCount: todayUnreadCount,
     });
 }));
+
+app.get(
+  '/api/candidates/:candidateId/documents/:documentField',
+  asyncHandler(async (req, res) => {
+    const { candidateId, documentField } = req.params;
+    const actorId = req.user?.id ? String(req.user.id) : null;
+    const actorRole = req.user?.role;
+
+    if (!actorId) {
+      return res.status(401).json({ message: 'Authentication required.' });
+    }
+
+    if (!ALLOWED_DOCUMENT_FIELDS.has(documentField)) {
+      return res.status(400).json({ message: 'Invalid document type.' });
+    }
+
+    const context = await loadCandidateDocumentContext(candidateId);
+    if (context.error) {
+      return res.status(context.error.statusCode).json({ message: context.error.message });
+    }
+
+    const allowed = await canUserAccessCandidateDocuments(actorId, actorRole, context);
+    if (!allowed) {
+      return res.status(403).json({ message: 'You do not have permission to view this document.' });
+    }
+
+    const resolved = resolveDocumentForDownload(context.candidate, documentField);
+    if (resolved.error) {
+      return res.status(resolved.error.statusCode).json({ message: resolved.error.message });
+    }
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${resolved.downloadName}"`);
+    return res.sendFile(resolved.absolutePath);
+  }),
+);
+
+app.patch(
+  '/api/candidates/:candidateId/documents',
+  candidateDocumentUpload,
+  asyncHandler(async (req, res) => {
+    const { candidateId } = req.params;
+    const actorId = req.user?.id ? String(req.user.id) : null;
+    const actorRole = req.user?.role;
+
+    const cleanupNewUploads = () => {
+      if (req.files?.updatedResume?.[0]) {
+        unlinkStoredUploadSafely(toWebUploadPath(req.files.updatedResume[0].path));
+      }
+      if (req.files?.ornnovaProfile?.[0]) {
+        unlinkStoredUploadSafely(toWebUploadPath(req.files.ornnovaProfile[0].path));
+      }
+    };
+
+    if (!actorId) {
+      cleanupNewUploads();
+      return res.status(401).json({ message: 'Authentication required.' });
+    }
+
+    const context = await loadCandidateDocumentContext(candidateId);
+    if (context.error) {
+      cleanupNewUploads();
+      return res.status(context.error.statusCode).json({ message: context.error.message });
+    }
+
+    const allowed = await canUserAccessCandidateDocuments(actorId, actorRole, context);
+    if (!allowed) {
+      cleanupNewUploads();
+      return res.status(403).json({ message: 'You do not have permission to update this profile.' });
+    }
+
+    const result = await updateCandidateDocuments(candidateId, req.files || {});
+    if (result.error) {
+      cleanupNewUploads();
+      return res.status(result.error.statusCode).json({ message: result.error.message });
+    }
+
+    return res.status(200).json({
+      message: 'Documents updated successfully ✅',
+      candidate: result.candidate,
+    });
+  }),
+);
 
 app.patch('/api/candidates/:candidateId/schedule-interview', asyncHandler(async (req, res) => {
     const { candidateId } = req.params;

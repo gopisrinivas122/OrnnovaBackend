@@ -40,6 +40,11 @@ const uploadFields = upload.fields([
   { name: 'candidateImage', maxCount: 1 },
 ]);
 
+const candidateDocumentUpload = upload.fields([
+  { name: 'updatedResume', maxCount: 1 },
+  { name: 'ornnovaProfile', maxCount: 1 },
+]);
+
 const jdStorage = multer.diskStorage({
   destination(req, file, cb) {
     ensureJdUploadDir();
@@ -68,6 +73,7 @@ const jdPdfUpload = multer({
 module.exports = {
   upload,
   uploadFields,
+  candidateDocumentUpload,
   jdPdfUpload,
   uploadDir,
   jdUploadDir,
