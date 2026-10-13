@@ -4,6 +4,8 @@ const CandidateModel = require('../models/Candidate');
 const {
   FUNNEL_STAGES,
   getLatestStatus,
+  getLatestStatusByTimestamp,
+  getCandidateUploadedOn,
   isUploadedCandidate,
   hasReachedStage,
   isRejectedStatus,
@@ -11,6 +13,12 @@ const {
   hasOfferStatus,
   parseInterviewDate,
 } = require('../utils/candidateStatusMap');
+const {
+  isISTCalendarDateInRange,
+  isISTCalendarDateOnOrBefore,
+  toISTDateKey,
+  parseInstant,
+} = require('../utils/istDate');
 const {
   isRequirementWorkBlocked,
   normalizeRequirementType,
@@ -22,6 +30,7 @@ const { buildCandidateReqIdValues } = require('../utils/requirementCandidateCoun
 const { computeUploadDisplayState } = require('../utils/requirementUploadSettings.util');
 const { isUserAssignedToRequirement } = require('./requirementWorkflow.service');
 const { serializeCandidateStatusHistory } = require('../utils/statusRemarks');
+const { candidateMatchesSourceProfileName } = require('../utils/sourceProfileNameMatch');
 
 function getActiveOpenRequirements(requirements = []) {
   return requirements.filter((req) => {
@@ -51,9 +60,22 @@ function flattenUploadedCandidates(candidateDocs = []) {
 function buildRequirementMap(requirements = []) {
   const map = new Map();
   requirements.forEach((req) => {
-    map.set(req._id.toString(), req);
+    const id = req._id?.toString();
+    if (id) map.set(id, req);
+    if (req.regId != null && String(req.regId).trim() !== '') {
+      map.set(String(req.regId).trim(), req);
+    }
   });
   return map;
+}
+
+function resolveClientNameForCandidateRow(row, reqMap) {
+  const req = reqMap.get(row.reqId) || reqMap.get(String(row.reqId || '').trim());
+  const client = req?.client;
+  if (client == null || String(client).trim() === '') return '—';
+  const label = String(client).trim();
+  if (isValidObjectId(label)) return '—';
+  return label;
 }
 
 function buildUserMap(users = []) {
@@ -464,25 +486,100 @@ function getRelatedCandidateDocsForRequirement(req, candidateDocs = []) {
 }
 
 /** Uploaded profiles for one requirement sourced by one user (same ownership rules as My Sourced Profiles). */
-function countProfilesSourcedByUserForRequirement(req, candidateDocs, userId) {
-  if (!userId) return 0;
+function listProfilesSourcedByUserForRequirement(req, candidateDocs, userId, fromDate = '', toDate = '') {
+  if (!userId) return [];
 
   const relatedDocuments = getRelatedCandidateDocsForRequirement(req, candidateDocs);
-  let count = 0;
+  const profiles = [];
+  const seen = new Set();
 
   relatedDocuments.forEach((doc) => {
     const docRecruiterIds = Array.isArray(doc.recruiterId) ? doc.recruiterId : [];
     (doc.candidates || []).forEach((candidate) => {
       if (candidate.savedStatus !== 'Uploaded') return;
       if (!candidateOwnedByUser(candidate, docRecruiterIds, userId)) return;
-      count += 1;
+
+      const uploadedOn = getCandidateUploadedOn(candidate);
+      if (!isISTCalendarDateInRange(uploadedOn, fromDate, toDate)) return;
+
+      const candidateId = candidate._id?.toString();
+      if (!candidateId || seen.has(candidateId)) return;
+      seen.add(candidateId);
+
+      const name = `${candidate.firstName || ''} ${candidate.lastName || ''}`.trim();
+      profiles.push({
+        candidateId,
+        candidateName: name || '—',
+        client: req.client || '—',
+        role: candidate.role || req.role || '—',
+        requirement: req.role || '—',
+        regId: req.regId || '—',
+        requirementId: req._id?.toString() || '',
+        status: getLatestStatusByTimestamp(candidate) || getLatestStatus(candidate) || 'No Action Taken',
+        uploadedOn: uploadedOn ? uploadedOn.toISOString() : null,
+      });
     });
   });
 
-  return count;
+  return profiles;
 }
 
-function formatRequirementAssignmentDetailRow(req, member, candidateDocs = [], userMap = new Map()) {
+function countProfilesSourcedByUserForRequirement(req, candidateDocs, userId, fromDate = '', toDate = '') {
+  return listProfilesSourcedByUserForRequirement(req, candidateDocs, userId, fromDate, toDate).length;
+}
+
+function isAssignmentEligibleForPeriod(member, req, fromDate, toDate) {
+  const assignedDate = member?.assignedDate;
+  if (!assignedDate) return false;
+
+  const assignedInstant = parseInstant(assignedDate);
+  if (!assignedInstant) return false;
+  const assignedKey = toISTDateKey(assignedInstant);
+  if (!assignedKey) return false;
+
+  if (toDate && assignedKey > toDate) return false;
+
+  if (isRequirementWorkBlocked(req?.requirementtype)) {
+    if (fromDate && assignedKey < fromDate) return false;
+    if (toDate && assignedKey > toDate) return false;
+    return true;
+  }
+
+  return isISTCalendarDateOnOrBefore(assignedDate, toDate || assignedKey);
+}
+
+function hasAssignedMemberRecord(req, userId) {
+  const uid = String(userId || '');
+  if (!uid) return false;
+  return (req?.assignedMembers || []).some((member) => String(member?.userId || '') === uid);
+}
+
+function isCurrentUserRequirementEligibleForPeriod(req, _fromDate, toDate) {
+  if (isRequirementWorkBlocked(req?.requirementtype)) return false;
+  const existedAt = req?.uploadedDate;
+  if (!existedAt) return false;
+  if (toDate && !isISTCalendarDateOnOrBefore(existedAt, toDate)) return false;
+  return true;
+}
+
+function setAssignmentRow(assignmentsByUser, userId, reqId, row) {
+  if (!assignmentsByUser.has(userId)) {
+    assignmentsByUser.set(userId, new Map());
+  }
+  const userRequirements = assignmentsByUser.get(userId);
+  if (!userRequirements.has(reqId)) {
+    userRequirements.set(reqId, row);
+  }
+}
+
+function formatRequirementAssignmentDetailRow(
+  req,
+  member,
+  candidateDocs = [],
+  userMap = new Map(),
+  fromDate = '',
+  toDate = '',
+) {
   const base = formatRequirementDrillDownRow(req);
   const assignedUserId = member?.userId ? String(member.userId) : '';
   const user = assignedUserId ? userMap.get(assignedUserId) : null;
@@ -492,6 +589,13 @@ function formatRequirementAssignmentDetailRow(req, member, candidateDocs = [], u
   const uploadState = assignedUserId
     ? computeUploadDisplayState(req, assignedUserId, currentlyAssigned)
     : computeUploadDisplayState(req, '', false);
+  const uploadedProfiles = listProfilesSourcedByUserForRequirement(
+    req,
+    candidateDocs,
+    assignedUserId,
+    fromDate,
+    toDate,
+  );
 
   return {
     ...base,
@@ -499,7 +603,8 @@ function formatRequirementAssignmentDetailRow(req, member, candidateDocs = [], u
     positions: req.numberOfPositions ?? 1,
     status: normalizeRequirementType(req.requirementtype) || '—',
     assignedDate: member?.assignedDate || null,
-    profilesSourcedCount: countProfilesSourcedByUserForRequirement(req, candidateDocs, assignedUserId),
+    profilesSourcedCount: uploadedProfiles.length,
+    uploadedProfiles,
     assignedUserId,
     ...uploadState,
   };
@@ -553,15 +658,51 @@ function computeRecruiterRequirementDetailsReport(
     (req.assignedMembers || []).forEach((member) => {
       const userId = member?.userId ? String(member.userId) : '';
       if (!userId) return;
-      if (!isDateInRange(member.assignedDate, fromDate, toDate)) return;
+      if (!isAssignmentEligibleForPeriod(member, req, fromDate, toDate)) return;
 
-      if (!assignmentsByUser.has(userId)) {
-        assignmentsByUser.set(userId, new Map());
-      }
-      const userRequirements = assignmentsByUser.get(userId);
-      if (!userRequirements.has(reqId)) {
-        userRequirements.set(reqId, formatRequirementAssignmentDetailRow(req, member, candidateDocs, userMap));
-      }
+      setAssignmentRow(
+        assignmentsByUser,
+        userId,
+        reqId,
+        formatRequirementAssignmentDetailRow(req, member, candidateDocs, userMap, fromDate, toDate),
+      );
+    });
+  });
+
+  const reqById = new Map();
+  requirements.forEach((req) => {
+    const reqId = req._id?.toString();
+    if (reqId) reqById.set(reqId, req);
+  });
+
+  users.forEach((user) => {
+    const userId = user?._id?.toString();
+    if (!userId) return;
+
+    (user.Requirements || []).forEach((reqRef) => {
+      const reqId = reqRef?._id ? String(reqRef._id) : String(reqRef || '');
+      if (!reqId) return;
+      if (assignmentsByUser.get(userId)?.has(reqId)) return;
+
+      const req = reqById.get(reqId);
+      if (!req) return;
+      if (hasAssignedMemberRecord(req, userId)) return;
+      if (!isUserAssignedToRequirement(user, reqId)) return;
+      if (!isCurrentUserRequirementEligibleForPeriod(req, fromDate, toDate)) return;
+
+      setAssignmentRow(
+        assignmentsByUser,
+        userId,
+        reqId,
+        formatRequirementAssignmentDetailRow(
+          req,
+          { userId, assignedDate: null },
+          candidateDocs,
+          userMap,
+          fromDate,
+          toDate,
+        ),
+      );
     });
   });
 
@@ -585,13 +726,26 @@ function computeRecruiterRequirementDetailsReport(
           .filter((client) => client && client !== '—'),
       )].sort((a, b) => a.localeCompare(b));
 
+      const uploadedProfilesById = new Map();
+      requirementsList.forEach((entry) => {
+        (entry.uploadedProfiles || []).forEach((profile) => {
+          if (!profile?.candidateId || uploadedProfilesById.has(profile.candidateId)) return;
+          uploadedProfilesById.set(profile.candidateId, profile);
+        });
+      });
+      const uploadedProfiles = [...uploadedProfilesById.values()].sort((a, b) => (
+        String(b.uploadedOn || '').localeCompare(String(a.uploadedOn || ''))
+      ));
+
       return {
         userId,
         name: user?.EmployeeName || 'Unknown',
         role: user?.UserType === 'TeamLead' ? 'Team Lead' : 'Recruiter',
         requirementCount: requirementsList.length,
+        profilesSourcedCount: uploadedProfiles.length,
         clients,
         requirements: requirementsList,
+        uploadedProfiles,
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -741,16 +895,25 @@ function buildDashboardDrillDown(requirements, rows, reqMap, { fromDate = '', to
   };
 }
 
-async function getAdminSourceProfiles({ fromDate = '', toDate = '' } = {}) {
-  const [users, candidateDocs] = await Promise.all([
+async function getAdminSourceProfiles({ fromDate = '', toDate = '', name = '' } = {}) {
+  const [users, candidateDocs, rawRequirements] = await Promise.all([
     NewUser.find({ UserType: { $in: ['User', 'TeamLead'] } }).lean(),
     CandidateModel.find().lean(),
+    NewRequirment.find().lean(),
   ]);
 
+  const requirements = await enrichRequirementsWithClientNames(rawRequirements);
+  const reqMap = buildRequirementMap(requirements);
+
   const rows = flattenUploadedCandidates(candidateDocs);
-  const scopedRows = (fromDate || toDate)
+  let scopedRows = (fromDate || toDate)
     ? rows.filter((row) => isUploadedOnInRange(row.candidate.uploadedOn, fromDate, toDate))
     : rows;
+
+  const nameQuery = String(name || '').trim();
+  if (nameQuery) {
+    scopedRows = scopedRows.filter((row) => candidateMatchesSourceProfileName(row.candidate, nameQuery));
+  }
 
   const recruiterIdToCandidates = {};
 
@@ -765,7 +928,10 @@ async function getAdminSourceProfiles({ fromDate = '', toDate = '' } = {}) {
       if (!recruiterIdToCandidates[recruiterId]) {
         recruiterIdToCandidates[recruiterId] = [];
       }
-      recruiterIdToCandidates[recruiterId].push(serialized);
+      recruiterIdToCandidates[recruiterId].push({
+        ...serialized,
+        client: resolveClientNameForCandidateRow(row, reqMap),
+      });
     });
   });
 
@@ -843,12 +1009,17 @@ module.exports = {
   computeRequirementFunnel,
   flattenUploadedCandidates,
   buildRequirementMap,
+  buildUserMap,
   computeProfilesSourcedReport,
   computeRecruiterRequirementDetailsReport,
   isDateInRange,
   isUploadedOnInRange,
   resolveUploaderIds,
   resolvePrimaryUploaderId,
+  resolveClientNameForCandidateRow,
   formatRequirementDrillDownRow,
   formatCandidateDrillDownRow,
+  isAssignmentEligibleForPeriod,
+  isCurrentUserRequirementEligibleForPeriod,
+  hasAssignedMemberRecord,
 };

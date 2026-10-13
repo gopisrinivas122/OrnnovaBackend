@@ -254,12 +254,45 @@ function isNoActionTakenCandidate(candidate, now = new Date()) {
   return daysSinceReference >= 2;
 }
 
+function getLatestStatusEntryByTimestamp(candidate) {
+  const statusList = candidate?.Status || [];
+  let latestEntry = null;
+  let latestDate = null;
+
+  statusList.forEach((entry) => {
+    if (!entry?.Status) return;
+    const actionDate = parseCandidateDate(entry?.Date);
+    if (!actionDate) {
+      if (!latestEntry) latestEntry = entry;
+      return;
+    }
+    if (!latestDate || actionDate > latestDate) {
+      latestDate = actionDate;
+      latestEntry = entry;
+    }
+  });
+
+  if (latestEntry) return latestEntry;
+  if (statusList.length) return statusList[statusList.length - 1];
+  return null;
+}
+
+function getLatestStatusByTimestamp(candidate) {
+  const entry = getLatestStatusEntryByTimestamp(candidate);
+  return entry?.Status || getLatestStatus(candidate);
+}
+
 module.exports = {
   REJECTED_STATUSES,
   REJECTION_STAGE_LABELS,
   JOINED_STATUSES,
   FUNNEL_STAGES,
   getLatestStatus,
+  getLatestStatusByTimestamp,
+  getLatestStatusEntryByTimestamp,
+  getLatestStatusActionDate,
+  parseCandidateDate,
+  getCandidateUploadedOn,
   getStatusRank,
   isUploadedCandidate,
   hasReachedStage,

@@ -8,10 +8,15 @@ const {
   flattenUploadedCandidates,
   buildRequirementMap,
   isDateInRange,
-  isUploadedOnInRange,
   formatRequirementDrillDownRow,
   formatCandidateDrillDownRow,
+  isAssignmentEligibleForPeriod,
+  isCurrentUserRequirementEligibleForPeriod,
+  hasAssignedMemberRecord,
 } = require('./adminAnalytics.service');
+const { isUserAssignedToRequirement } = require('./requirementWorkflow.service');
+const { getCandidateUploadedOn } = require('../utils/candidateStatusMap');
+const { isISTCalendarDateInRange } = require('../utils/istDate');
 
 const WORK_SUMMARY_METRICS = {
   reqsAssigned: 'reqsAssigned',
@@ -83,39 +88,52 @@ function candidateHasStatusEventInRange(candidate, statusLabels, startDate, endD
 }
 
 function resolveUploadedOn(candidate) {
-  return candidate?.uploadedOn || candidate?.date || null;
+  return getCandidateUploadedOn(candidate) || candidate?.uploadedOn || candidate?.date || null;
 }
 
 function profileSourcedByEmployeeInRange(row, employeeId, startDate, endDate) {
   if (!candidateOwnedByUser(row.candidate, row.recruiterIds, employeeId)) return false;
-  return isUploadedOnInRange(resolveUploadedOn(row.candidate), startDate, endDate);
+  return isISTCalendarDateInRange(resolveUploadedOn(row.candidate), startDate, endDate);
 }
 
-function countReqsAssignedForEmployee(requirements, employeeId, startDate, endDate) {
-  let count = 0;
-  requirements.forEach((req) => {
-    (req.assignedMembers || []).forEach((member) => {
-      if (String(member.userId) !== String(employeeId)) return;
-      if (!isDateInRange(member.assignedDate, startDate, endDate)) return;
-      count += 1;
-    });
-  });
-  return count;
-}
+function listReqsAssignedForEmployee(requirements, employeeId, startDate, endDate, user) {
+  const byReqId = new Map();
+  const uid = String(employeeId);
 
-function listReqsAssignedForEmployee(requirements, employeeId, startDate, endDate) {
-  const rows = [];
   requirements.forEach((req) => {
+    const reqId = req._id?.toString();
+    if (!reqId || byReqId.has(reqId)) return;
+
     (req.assignedMembers || []).forEach((member) => {
-      if (String(member.userId) !== String(employeeId)) return;
-      if (!isDateInRange(member.assignedDate, startDate, endDate)) return;
-      rows.push({
+      if (String(member.userId) !== uid) return;
+      if (!isAssignmentEligibleForPeriod(member, req, startDate, endDate)) return;
+      if (byReqId.has(reqId)) return;
+      byReqId.set(reqId, {
         ...formatRequirementDrillDownRow(req),
         assignedDate: member.assignedDate || null,
       });
     });
   });
-  return rows;
+
+  if (user) {
+    requirements.forEach((req) => {
+      const reqId = req._id?.toString();
+      if (!reqId || byReqId.has(reqId)) return;
+      if (hasAssignedMemberRecord(req, uid)) return;
+      if (!isUserAssignedToRequirement(user, reqId)) return;
+      if (!isCurrentUserRequirementEligibleForPeriod(req, startDate, endDate)) return;
+      byReqId.set(reqId, {
+        ...formatRequirementDrillDownRow(req),
+        assignedDate: null,
+      });
+    });
+  }
+
+  return [...byReqId.values()];
+}
+
+function countReqsAssignedForEmployee(requirements, employeeId, startDate, endDate, user) {
+  return listReqsAssignedForEmployee(requirements, employeeId, startDate, endDate, user).length;
 }
 
 function formatStatusMetricRow(row, reqMap, statusLabel, eventDate) {
@@ -128,9 +146,16 @@ function formatStatusMetricRow(row, reqMap, statusLabel, eventDate) {
 }
 
 function listProfilesSourcedForEmployee(rows, reqMap, employeeId, startDate, endDate) {
-  return rows
-    .filter((row) => profileSourcedByEmployeeInRange(row, employeeId, startDate, endDate))
-    .map((row) => formatCandidateDrillDownRow(row, reqMap));
+  const seen = new Set();
+  const results = [];
+  rows.forEach((row) => {
+    if (!profileSourcedByEmployeeInRange(row, employeeId, startDate, endDate)) return;
+    const candidateId = row.candidate?._id?.toString();
+    if (!candidateId || seen.has(candidateId)) return;
+    seen.add(candidateId);
+    results.push(formatCandidateDrillDownRow(row, reqMap));
+  });
+  return results;
 }
 
 function listStatusMetricForEmployee(rows, reqMap, employeeId, metricKey, startDate, endDate) {
@@ -152,8 +177,17 @@ function listStatusMetricForEmployee(rows, reqMap, employeeId, metricKey, startD
 function buildEmployeeSummaryRow(user, requirements, rows, reqMap, startDate, endDate) {
   const employeeId = user._id.toString();
   const metrics = {
-    reqsAssigned: countReqsAssignedForEmployee(requirements, employeeId, startDate, endDate),
-    profilesSourced: rows.filter((row) => profileSourcedByEmployeeInRange(row, employeeId, startDate, endDate)).length,
+    reqsAssigned: countReqsAssignedForEmployee(requirements, employeeId, startDate, endDate, user),
+    profilesSourced: (() => {
+      const seen = new Set();
+      rows.forEach((row) => {
+        if (!profileSourcedByEmployeeInRange(row, employeeId, startDate, endDate)) return;
+        const candidateId = row.candidate?._id?.toString();
+        if (!candidateId || seen.has(candidateId)) return;
+        seen.add(candidateId);
+      });
+      return seen.size;
+    })(),
     ornnovaScreenSelected: 0,
     l1Select: 0,
     l2Select: 0,
@@ -227,7 +261,7 @@ async function getEmployeeWorkSummary({ startDate, endDate, employeeId, metric }
       UserType: { $in: ['User', 'TeamLead'] },
       ...activeUserFilter,
     })
-      .select('_id EmployeeName UserType Status')
+      .select('_id EmployeeName UserType Status Requirements')
       .lean(),
     CandidateModel.find().lean(),
   ]);
@@ -265,7 +299,7 @@ async function getEmployeeWorkSummary({ startDate, endDate, employeeId, metric }
 
     let detailRows = [];
     if (normalizedMetric === WORK_SUMMARY_METRICS.reqsAssigned) {
-      detailRows = listReqsAssignedForEmployee(requirements, targetId, startDate, endDate);
+      detailRows = listReqsAssignedForEmployee(requirements, targetId, startDate, endDate, scopedUsers[0]);
     } else if (normalizedMetric === WORK_SUMMARY_METRICS.profilesSourced) {
       detailRows = listProfilesSourcedForEmployee(rows, reqMap, targetId, startDate, endDate);
     } else {
@@ -305,4 +339,7 @@ async function getEmployeeWorkSummary({ startDate, endDate, employeeId, metric }
 module.exports = {
   getEmployeeWorkSummary,
   WORK_SUMMARY_METRICS,
+  countReqsAssignedForEmployee,
+  listReqsAssignedForEmployee,
+  profileSourcedByEmployeeInRange,
 };

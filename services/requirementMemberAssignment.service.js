@@ -114,10 +114,62 @@ function isMemberAssigned(requirement, userId) {
   return (requirement.assignedMembers || []).some((member) => String(member.userId) === uid);
 }
 
+function userHasRequirement(user, requirementId) {
+  if (!user || !requirementId) return false;
+  const reqId = String(requirementId);
+  return (user.Requirements || []).some((id) => String(id) === reqId);
+}
+
+function addRequirementToUserIfMissing(user, requirementId) {
+  if (!user || !requirementId) return false;
+  if (userHasRequirement(user, requirementId)) return false;
+  if (!Array.isArray(user.Requirements)) {
+    user.Requirements = [];
+  }
+  user.Requirements.push(requirementId);
+  return true;
+}
+
+function buildAssignedMemberRecord(user, assignedDate = new Date()) {
+  return {
+    userId: String(user._id),
+    userType: user.UserType || '',
+    employeeName: user.EmployeeName || '',
+    email: user.Email || '',
+    assignedDate,
+  };
+}
+
+function appendAssignedMemberIfMissing(requirement, user, assignedDate = new Date()) {
+  if (!requirement || !user) {
+    return { added: false, assignedDate: null };
+  }
+
+  const uid = String(user._id);
+  const existing = (requirement.assignedMembers || []).find(
+    (member) => String(member.userId) === uid,
+  );
+  if (existing) {
+    return { added: false, assignedDate: existing.assignedDate || null };
+  }
+
+  if (!Array.isArray(requirement.assignedMembers)) {
+    requirement.assignedMembers = [];
+  }
+
+  const record = buildAssignedMemberRecord(user, assignedDate);
+  requirement.assignedMembers.push(record);
+  return { added: true, assignedDate: record.assignedDate };
+}
+
 module.exports = {
   parseAssignedMemberIds,
   normalizeAssignedMembers,
   assignRequirementToMembers,
   getAssignableMembers,
   isMemberAssigned,
+  userHasRequirement,
+  addRequirementToUserIfMissing,
+  appendAssignedMemberIfMissing,
+  buildAssignedMemberRecord,
 };

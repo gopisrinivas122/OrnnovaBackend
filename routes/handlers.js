@@ -109,6 +109,9 @@ const {
   normalizeAssignedMembers,
   assignRequirementToMembers,
   getAssignableMembers,
+  userHasRequirement,
+  addRequirementToUserIfMissing,
+  appendAssignedMemberIfMissing,
 } = require('../services/requirementMemberAssignment.service');
 const { canTeamLeadManageRequirement } = require('../utils/requirementVisibility');
 const { validateAssessments } = require('../utils/requirementAssessments');
@@ -128,6 +131,10 @@ const {
 } = require('../utils/requirementJd');
 const { getRejectedCandidatesReport } = require('../services/rejectedCandidates.service');
 const { getMySourcedProfiles } = require('../services/mySourcedProfiles.service');
+const {
+  searchDashboardSourceProfiles,
+  canAuthenticatedUserViewSourceProfile,
+} = require('../services/sourceProfileSearch.service');
 const {
   isRejectedStatus,
   getRejectionStageLabel,
@@ -1624,6 +1631,17 @@ app.get('/candidate/:id', async (req, res) => {
             return res.status(404).json({ message: 'Candidate not found' });
         }
 
+        const viewAccess = await canAuthenticatedUserViewSourceProfile(
+            req.user?.id,
+            req.user?.role,
+            candidateId,
+        );
+        if (!viewAccess.ok) {
+            return res.status(viewAccess.statusCode || 403).json({
+                message: viewAccess.message || 'You do not have permission to view this source profile.',
+            });
+        }
+
         // Send the candidate data as a response
         res.json(serializeCandidateForResponse(candidate));
     } catch (err) {
@@ -1846,50 +1864,56 @@ app.post('/assignReq/:userId/:requirementId', async (req, res) => {
             return res.status(400).json({ status: 'error', msg: 'Cannot assign requirements to an inactive user.' });
         }
 
-        const alreadyAssigned = (user.Requirements || []).some(
-            (id) => id.toString() === requirementId.toString()
-        );
+        const requirement = await NewRequirment.findById(requirementId);
+        if (!requirement) {
+            return res.status(404).json({ status: 'error', msg: 'Requirement not found.' });
+        }
 
-        if (alreadyAssigned) {
+        if (userHasRequirement(user, requirementId)) {
             return res.json({ status: 'error', msg: 'Requirement already assigned to this user 😊' });
+        }
+
+        const assigner = req.user?.id ? await NewUser.findById(req.user.id) : null;
+
+        if (assigner?.UserType === 'TeamLead') {
+            const assignerId = assigner._id.toString();
+            const isCreator = getCreatedBy(requirement) === assignerId;
+            const isAssignedClaimed = isUserAssignedToRequirement(assigner, requirementId)
+              && hasUserClaimed(requirement, assignerId);
+
+            if (!isCreator && !isAssignedClaimed) {
+                return res.status(403).json({ status: 'error', msg: 'Team Lead must claim this requirement before assigning it to recruiters.' });
+            }
+
+            const teamIds = (assigner.Team || []).map((id) => id.toString());
+            if (!teamIds.includes(userId.toString()) && user.UserType !== 'TeamLead') {
+                return res.status(403).json({ status: 'error', msg: 'Team Lead can assign only to recruiters in their team.' });
+            }
         }
 
         user.excludedRequirements = (user.excludedRequirements || []).filter(
             (id) => id.toString() !== requirementId.toString()
         );
-        user.Requirements.push(requirementId);
-        await user.save();
+        addRequirementToUserIfMissing(user, requirementId);
+        const memberSync = appendAssignedMemberIfMissing(requirement, user, new Date());
 
-        const requirement = await NewRequirment.findById(requirementId);
-        if (requirement) {
-            const assigner = req.user?.id ? await NewUser.findById(req.user.id) : null;
+        requirement.assignedBy = assigner?._id?.toString() || requirement.assignedBy || '';
+        requirement.update = 'Old';
+        if (!requirement.createdBy) {
+            requirement.createdBy = getCreatedBy(requirement);
+        }
 
-            if (assigner?.UserType === 'TeamLead') {
-                const assignerId = assigner._id.toString();
-                const isCreator = getCreatedBy(requirement) === assignerId;
-                const isAssignedClaimed = isUserAssignedToRequirement(assigner, requirementId)
-                  && hasUserClaimed(requirement, assignerId);
-
-                if (!isCreator && !isAssignedClaimed) {
-                    user.Requirements = user.Requirements.filter((id) => id.toString() !== requirementId.toString());
-                    await user.save();
-                    return res.status(403).json({ status: 'error', msg: 'Team Lead must claim this requirement before assigning it to recruiters.' });
-                }
-
-                const teamIds = (assigner.Team || []).map((id) => id.toString());
-                if (!teamIds.includes(userId.toString()) && user.UserType !== 'TeamLead') {
-                    user.Requirements = user.Requirements.filter((id) => id.toString() !== requirementId.toString());
-                    await user.save();
-                    return res.status(403).json({ status: 'error', msg: 'Team Lead can assign only to recruiters in their team.' });
-                }
+        await requirement.save();
+        try {
+            await user.save();
+        } catch (userSaveError) {
+            if (memberSync.added) {
+                requirement.assignedMembers = (requirement.assignedMembers || []).filter(
+                    (member) => String(member.userId) !== String(userId)
+                );
+                await requirement.save();
             }
-
-            requirement.assignedBy = assigner?._id?.toString() || requirement.assignedBy || '';
-            requirement.update = 'Old';
-            if (!requirement.createdBy) {
-                requirement.createdBy = getCreatedBy(requirement);
-            }
-            await requirement.save();
+            throw userSaveError;
         }
 
         sendEmailSafely({
@@ -2819,6 +2843,20 @@ app.get('/api/admin/source-profiles', authorizeRoles('Admin'), asyncHandler(asyn
         fromDate: from || '',
         toDate: to || '',
     });
+    res.json(data);
+}));
+
+app.get('/api/source-profiles/search', authorizeRoles('Admin', 'TeamLead'), asyncHandler(async (req, res) => {
+    const data = await searchDashboardSourceProfiles({
+        actorId: req.user?.id,
+        actorRole: req.user?.role,
+        name: req.query.q || req.query.name || '',
+    });
+
+    if (data.status === 'Error') {
+        return res.status(data.statusCode || 400).json(data);
+    }
+
     res.json(data);
 }));
 

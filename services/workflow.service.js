@@ -8,49 +8,16 @@ const {
 } = require('./adminAnalytics.service');
 const {
   getLatestStatus,
+  getLatestStatusActionDate,
   parseInterviewDate,
 } = require('../utils/candidateStatusMap');
+const { computeTodayMonitorPayload } = require('./todayMonitor.service');
+const { isSameISTDay } = require('../utils/istDate');
 const { getExcludedRequirementIdSet } = require('../utils/teamLeadRequirements');
 const {
   listPersistedNotificationsForUser,
   countUnreadPersistedNotifications,
 } = require('./statusRemarkNotification.service');
-
-const PENDING_STATUSES = new Set([
-  'Ornnova Screen Selected',
-  'Shared with Client',
-  'L1 Schedule',
-  'L1 Pending',
-  'L1 To be Schedule',
-  'L1 Selected',
-  'L2 Schedule',
-  'L2 Pending',
-  'L2 To be Schedule',
-  'L2 Selected',
-  'L3 Schedule',
-  'L3 Pending',
-  'L3 To be Schedule',
-  'Onboard Confirmation',
-  'Offer Released',
-  'Offer Accepted',
-]);
-
-function isSameDay(value, reference = new Date()) {
-  if (!value) return false;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return false;
-  return (
-    date.getFullYear() === reference.getFullYear() &&
-    date.getMonth() === reference.getMonth() &&
-    date.getDate() === reference.getDate()
-  );
-}
-
-function getLastStatusDate(candidate) {
-  const statusList = candidate?.Status || [];
-  if (!statusList.length) return null;
-  return statusList[statusList.length - 1]?.Date || null;
-}
 
 function formatInterviewLabel(interviewDate, interviewTime) {
   if (!interviewDate) return '—';
@@ -122,61 +89,16 @@ function rowInScope(row, scope) {
   return row.recruiterIds.some((id) => scope.recruiterIds.has(id));
 }
 
-function buildMonitorItem(row, reqMap, userMap, reason, priority) {
-  const req = reqMap.get(row.reqId);
-  const status = getLatestStatus(row.candidate);
-  const name = `${row.candidate.firstName || ''} ${row.candidate.lastName || ''}`.trim();
-
-  return {
-    candidateId: row.candidate._id?.toString(),
-    candidateName: name || '—',
-    client: req?.client || '—',
-    role: row.candidate.role || req?.role || '—',
-    regId: req?.regId || row.reqId,
-    requirementId: row.reqId,
-    status,
-    recruiter: resolveRecruiterName(row, userMap),
-    interviewDate: row.candidate.interviewDate || '',
-    interviewTime: row.candidate.interviewTime || '',
-    interviewLabel: formatInterviewLabel(row.candidate.interviewDate, row.candidate.interviewTime),
-    reason,
-    priority,
-  };
-}
-
 function computeTodayMonitor(rows, reqMap, userMap, scope) {
-  const today = new Date();
-  const items = [];
-  const seen = new Set();
-
-  const addItem = (row, reason, priority) => {
-    const key = `${row.candidate._id}-${reason}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    items.push(buildMonitorItem(row, reqMap, userMap, reason, priority));
-  };
-
-  rows.forEach((row) => {
-    if (!rowInScope(row, scope)) return;
-
-    const status = getLatestStatus(row.candidate);
-    const uploadedToday = isSameDay(row.candidate.uploadedOn, today);
-    const statusUpdatedToday = isSameDay(getLastStatusDate(row.candidate), today);
-    const interviewToday = isSameDay(parseInterviewDate(row.candidate.interviewDate), today);
-
-    if (uploadedToday) addItem(row, 'uploaded_today', 'medium');
-    if (statusUpdatedToday) addItem(row, 'status_updated_today', 'medium');
-    if (interviewToday) addItem(row, 'interview_today', 'high');
-    if (PENDING_STATUSES.has(status) && !uploadedToday && !statusUpdatedToday) {
-      addItem(row, 'pending_action', 'high');
-    }
-    if (status === 'Offer Released' || status === 'Offer Accepted') {
-      addItem(row, 'offer_stage', 'high');
-    }
-  });
-
-  const priorityOrder = { high: 0, medium: 1, low: 2 };
-  return items.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
+  const payload = computeTodayMonitorPayload(
+    rows,
+    reqMap,
+    userMap,
+    scope,
+    rowInScope,
+    { formatInterviewLabel, resolveRecruiterName },
+  );
+  return payload.items;
 }
 
 function computeUpcomingInterviewsList(rows, reqMap, userMap, scope, days = 7) {
@@ -236,7 +158,7 @@ function computeNotifications(rows, reqMap, userMap, scope, user) {
   }
 
   const interviewsToday = computeUpcomingInterviewsList(rows, reqMap, userMap, scope, 1)
-    .filter((item) => isSameDay(parseInterviewDate(item.interviewDate), today));
+    .filter((item) => isSameISTDay(parseInterviewDate(item.interviewDate), today));
   if (interviewsToday.length > 0) {
     notifications.push({
       id: 'interviews-today',
@@ -266,7 +188,7 @@ function computeNotifications(rows, reqMap, userMap, scope, user) {
 
   if (user?.UserType === 'TeamLead') {
     const uploadedToday = rows.filter(
-      (row) => rowInScope(row, scope) && isSameDay(row.candidate.uploadedOn, today)
+      (row) => rowInScope(row, scope) && isSameISTDay(row.candidate.uploadedOn, today)
     ).length;
     if (uploadedToday > 0) {
       notifications.push({
@@ -358,7 +280,7 @@ function computeRecruiterWorkLog(rows, reqMap, userMap, scope, fromDate, toDate)
     if (!rowInScope(row, scope)) return;
 
     const uploadedOn = row.candidate.uploadedOn;
-    const statusDate = getLastStatusDate(row.candidate);
+    const statusDate = getLatestStatusActionDate(row.candidate);
     const uploadedInRange = isInDateRange(uploadedOn, fromDate, toDate);
     const statusInRange = isInDateRange(statusDate, fromDate, toDate)
       && getLatestStatus(row.candidate) !== 'No Action Taken';
@@ -426,20 +348,23 @@ async function getTodayMonitorForUser(userId) {
   }
 
   const scope = buildScope(user, requirements);
-  const items = computeTodayMonitor(rows, reqMap, userMap, scope);
+  const monitorPayload = computeTodayMonitorPayload(
+    rows,
+    reqMap,
+    userMap,
+    scope,
+    rowInScope,
+    { formatInterviewLabel, resolveRecruiterName },
+  );
 
   return {
     status: 'Success',
     generatedAt: new Date().toISOString(),
     role: user.UserType,
-    summary: {
-      total: items.length,
-      highPriority: items.filter((item) => item.priority === 'high').length,
-      interviewsToday: items.filter((item) => item.reason === 'interview_today').length,
-      pendingAction: items.filter((item) => item.reason === 'pending_action').length,
-      offerStage: items.filter((item) => item.reason === 'offer_stage').length,
-    },
-    items,
+    timezone: 'Asia/Kolkata',
+    summary: monitorPayload.summary,
+    filterBuckets: monitorPayload.filterBuckets,
+    items: monitorPayload.items,
   };
 }
 
