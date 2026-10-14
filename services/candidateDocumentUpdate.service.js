@@ -5,7 +5,7 @@ const NewRequirment = require('../models/Requirement');
 const NewUser = require('../models/User');
 const { uploadDir } = require('../config/multer');
 const { candidateOwnedByUser } = require('../utils/candidateOwnership.util');
-const { userCanAccessRequirement } = require('../utils/teamLeadRequirements');
+const { isRequirementVisibleToTeamLead } = require('../utils/teamLeadRequirements');
 const { isValidObjectId } = require('../middleware/validateObjectId');
 
 const ALLOWED_DOCUMENT_FIELDS = new Set(['updatedResume', 'ornnovaProfile']);
@@ -76,7 +76,16 @@ async function canUserAccessCandidateDocuments(actorId, actorRole, context) {
 
   if (actorRole === 'TeamLead') {
     const requirement = await findRequirementForReqId(context.reqId);
-    return userCanAccessRequirement(user, requirement);
+    if (!isRequirementVisibleToTeamLead(user, requirement, 'all')) return false;
+    const allowedRecruiterIds = new Set([
+      String(user._id),
+      ...(user.Team || []).map((id) => String(id)),
+    ]);
+    if (candidateOwnedByUser(context.candidate, context.docRecruiterIds, actorId)) return true;
+    return (context.docRecruiterIds || []).some((id) => allowedRecruiterIds.has(String(id)))
+      || (Array.isArray(context.candidate?.recruiterId)
+        ? context.candidate.recruiterId.some((id) => allowedRecruiterIds.has(String(id)))
+        : allowedRecruiterIds.has(String(context.candidate?.recruiterId || '')));
   }
 
   return false;

@@ -122,6 +122,7 @@ const {
   setProfileUploadEnabled,
   removeUserUploadSetting,
   attachProfileUploadEnabled,
+  applyUserUploadSettingsToUpdate,
 } = require('../utils/requirementUploadSettings.util');
 const { canUserManageUploadStatus } = require('../services/requirementUploadPermission.service');
 const {
@@ -133,6 +134,7 @@ const { getRejectedCandidatesReport } = require('../services/rejectedCandidates.
 const { getMySourcedProfiles } = require('../services/mySourcedProfiles.service');
 const {
   searchDashboardSourceProfiles,
+  listTeamLeadSourceProfiles,
   canAuthenticatedUserViewSourceProfile,
 } = require('../services/sourceProfileSearch.service');
 const {
@@ -2464,6 +2466,12 @@ app.put('/editRequirement/:id', jdPdfUpload.single('jdPdf'), async (req, res) =>
             delete updateData.assignedMembers;
         }
 
+        const uploadSettingsUpdate = applyUserUploadSettingsToUpdate(updateData, req.body);
+        if (!uploadSettingsUpdate.ok) {
+            if (req.file) deleteJdFileIfExists(buildJdPublicPath(req.file));
+            return res.status(400).json({ message: uploadSettingsUpdate.message });
+        }
+
         if (actor.UserType !== 'Admin') {
             delete updateData.priority;
         } else if (Object.prototype.hasOwnProperty.call(updateData, 'priority')) {
@@ -2843,6 +2851,20 @@ app.get('/api/admin/source-profiles', authorizeRoles('Admin'), asyncHandler(asyn
         fromDate: from || '',
         toDate: to || '',
     });
+    res.json(data);
+}));
+
+app.get('/api/teamlead/source-profiles', authorizeRoles('TeamLead'), asyncHandler(async (req, res) => {
+    const data = await listTeamLeadSourceProfiles({
+        actorId: req.user?.id,
+        fromDate: req.query.from || '',
+        toDate: req.query.to || '',
+    });
+
+    if (data.status === 'Error') {
+        return res.status(data.statusCode || 400).json(data);
+    }
+
     res.json(data);
 }));
 

@@ -19,6 +19,7 @@ const {
   resolveClientNameForCandidateRow,
   buildUserMap,
   getAdminSourceProfiles,
+  isUploadedOnInRange,
 } = require('./adminAnalytics.service');
 
 function buildVisibleRequirementIdSet(requirements = []) {
@@ -114,6 +115,54 @@ function emptySearchResult(query) {
   };
 }
 
+function selectVisibleRequirementsForTeamLead(requirements, user) {
+  return (requirements || []).filter((req) => isRequirementVisibleToTeamLead(user, req, 'all'));
+}
+
+function filterTeamLeadProfileRows(rows, {
+  visibleReqIds,
+  allowedRecruiterIds,
+  fromDate = '',
+  toDate = '',
+  name = '',
+} = {}) {
+  return (rows || []).filter((row) => {
+    if (!rowMatchesVisibleRequirement(row, visibleReqIds)) return false;
+    if (!rowOwnedByAllowedRecruiters(row, allowedRecruiterIds)) return false;
+    if ((fromDate || toDate) && !isUploadedOnInRange(row.candidate?.uploadedOn, fromDate, toDate)) {
+      return false;
+    }
+    if (name && !candidateMatchesSourceProfileName(row.candidate, name)) return false;
+    return true;
+  });
+}
+
+function dedupeSourceProfileRows(rows = []) {
+  const seen = new Set();
+  const unique = [];
+  rows.forEach((row) => {
+    const id = row?.candidate?._id?.toString();
+    if (id) {
+      if (seen.has(id)) return;
+      seen.add(id);
+    }
+    unique.push(row);
+  });
+  return unique;
+}
+
+function emptyTeamLeadSourceProfiles({ fromDate = '', toDate = '' } = {}) {
+  return {
+    status: 'Success',
+    recruiters: [],
+    total: 0,
+    period: {
+      fromDate: fromDate || null,
+      toDate: toDate || null,
+    },
+  };
+}
+
 async function searchDashboardSourceProfiles({
   actorId,
   actorRole,
@@ -142,6 +191,33 @@ async function searchDashboardSourceProfiles({
     return { ...result, query };
   }
 
+  const listed = await listTeamLeadSourceProfiles({
+    actorId,
+    name: query,
+  });
+  if (listed.status === 'Error') {
+    return listed;
+  }
+  return { ...listed, query };
+}
+
+async function listTeamLeadSourceProfiles({
+  actorId,
+  fromDate = '',
+  toDate = '',
+  name = '',
+} = {}) {
+  const user = await NewUser.findById(actorId)
+    .select('_id EmployeeName UserType Team Requirements excludedRequirements')
+    .lean();
+
+  if (!user) {
+    return { status: 'Error', msg: 'User not found.', statusCode: 404 };
+  }
+  if (user.UserType !== 'TeamLead') {
+    return { status: 'Error', msg: 'You do not have permission to view source profiles.', statusCode: 403 };
+  }
+
   const [rawRequirements, users, activeTeamIds] = await Promise.all([
     NewRequirment.find().lean(),
     NewUser.find({ UserType: { $in: ['User', 'TeamLead'] } })
@@ -150,11 +226,9 @@ async function searchDashboardSourceProfiles({
     loadActiveTeamIds(user),
   ]);
 
-  const visibleRequirements = rawRequirements.filter((req) => (
-    isRequirementVisibleToTeamLead(user, req, 'all')
-  ));
+  const visibleRequirements = selectVisibleRequirementsForTeamLead(rawRequirements, user);
   if (!visibleRequirements.length) {
-    return emptySearchResult(query);
+    return emptyTeamLeadSourceProfiles({ fromDate, toDate });
   }
 
   const visibleReqIds = buildVisibleRequirementIdSet(visibleRequirements);
@@ -168,19 +242,22 @@ async function searchDashboardSourceProfiles({
   const requirements = await enrichRequirementsWithClientNames(visibleRequirements);
   const reqMap = buildRequirementMap(requirements);
   const rows = flattenUploadedCandidates(candidateDocs);
-
-  const scopedRows = rows.filter((row) => {
-    if (!candidateMatchesSourceProfileName(row.candidate, query)) return false;
-    if (!rowMatchesVisibleRequirement(row, visibleReqIds)) return false;
-    if (!rowOwnedByAllowedRecruiters(row, allowedRecruiterIds)) return false;
-    return true;
-  });
+  const scopedRows = dedupeSourceProfileRows(filterTeamLeadProfileRows(rows, {
+    visibleReqIds,
+    allowedRecruiterIds,
+    fromDate,
+    toDate,
+    name,
+  }));
 
   const grouped = groupRowsByRecruiter(scopedRows, users, reqMap);
   return {
     status: 'Success',
     ...grouped,
-    query,
+    period: {
+      fromDate: fromDate || null,
+      toDate: toDate || null,
+    },
   };
 }
 
@@ -249,6 +326,10 @@ module.exports = {
   buildVisibleRequirementIdSet,
   rowMatchesVisibleRequirement,
   rowOwnedByAllowedRecruiters,
+  selectVisibleRequirementsForTeamLead,
+  filterTeamLeadProfileRows,
+  dedupeSourceProfileRows,
   searchDashboardSourceProfiles,
+  listTeamLeadSourceProfiles,
   canAuthenticatedUserViewSourceProfile,
 };
