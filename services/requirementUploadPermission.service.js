@@ -1,4 +1,5 @@
 const NewUser = require('../models/User');
+const { isAdminOrHrRole } = require('../utils/constants');
 const { isActiveUser } = require('../utils/userStatus');
 const {
   getCreatedBy,
@@ -21,7 +22,7 @@ async function canUserManageUploadStatus(actor, requirement, targetUserId) {
     return false;
   }
 
-  if (actor.UserType === 'Admin') {
+  if (isAdminOrHrRole(actor.UserType)) {
     return true;
   }
 

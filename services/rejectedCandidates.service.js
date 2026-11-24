@@ -1,5 +1,9 @@
 const NewUser = require('../models/User');
 const {
+  findRequirementByKey,
+  resolveTeamLeadRequirementAccess,
+} = require('../utils/teamLeadProfileAccess');
+const {
   isUploadedCandidate,
   getLatestStatus,
   isRejectedStatus,
@@ -46,10 +50,8 @@ function candidateMatchesScope(candidate, docRecruiterId, scope) {
   }
 
   if (scope.userType === 'TeamLead') {
-    const allowedIds = new Set([
-      String(scope.userId),
-      ...(scope.teamIds || []).map(String),
-    ]);
+    if (scope.accessLevel === 'full') return true;
+    const allowedIds = new Set([String(scope.userId)]);
     return [...candidateRecruiterIds, ...docRecruiterIds].some((id) => allowedIds.has(String(id)));
   }
 
@@ -114,7 +116,7 @@ function buildRejectedCandidateRow(entry, recruiterMap, users) {
   };
 }
 
-async function buildRejectedCandidatesScope(userId) {
+async function buildRejectedCandidatesScope(userId, candidateDocs = []) {
   if (!userId) {
     return { userType: 'Admin', userId: '', teamIds: [] };
   }
@@ -131,10 +133,13 @@ async function buildRejectedCandidatesScope(userId) {
   }
 
   if (user.UserType === 'TeamLead') {
+    const requirement = await findRequirementByKey(candidateDocs[0]?.reqId);
+    const { level } = await resolveTeamLeadRequirementAccess(user, requirement);
     return {
       userType: 'TeamLead',
       userId: user._id.toString(),
-      teamIds: (user.Team || []).map(String),
+      teamIds: [],
+      accessLevel: level === 'full' ? 'full' : 'own',
     };
   }
 
@@ -146,7 +151,7 @@ async function buildRejectedCandidatesScope(userId) {
 }
 
 async function getRejectedCandidatesReport(candidateDocs = [], userId = null) {
-  const scope = await buildRejectedCandidatesScope(userId);
+  const scope = await buildRejectedCandidatesScope(userId, candidateDocs);
   const rejectedEntries = collectRejectedCandidates(candidateDocs, scope);
 
   const recruiterIds = new Set();

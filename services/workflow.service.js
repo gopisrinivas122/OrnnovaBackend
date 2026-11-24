@@ -13,7 +13,11 @@ const {
 } = require('../utils/candidateStatusMap');
 const { computeTodayMonitorPayload } = require('./todayMonitor.service');
 const { isSameISTDay } = require('../utils/istDate');
-const { getExcludedRequirementIdSet } = require('../utils/teamLeadRequirements');
+const { getTeamLeadClientContext } = require('../utils/teamLeadRequirements');
+const {
+  buildTeamLeadProfileAccess,
+  candidateRowVisibleToTeamLead,
+} = require('../utils/teamLeadProfileAccess');
 const {
   listPersistedNotificationsForUser,
   countUnreadPersistedNotifications,
@@ -46,7 +50,7 @@ function resolveRecruiterName(row, userMap) {
   return 'Unknown';
 }
 
-function buildScope(user, requirements = []) {
+async function buildScope(user, requirements = []) {
   if (!user) {
     return { requirementIds: new Set(), recruiterIds: new Set() };
   }
@@ -59,21 +63,12 @@ function buildScope(user, requirements = []) {
   }
 
   if (user.UserType === 'TeamLead') {
-    const clientIds = new Set((user.Clients || []).map(String));
-    const assignedReqIds = new Set((user.Requirements || []).map(String));
-    const excludedReqIds = getExcludedRequirementIdSet(user);
-    const recruiterIds = new Set([user._id.toString(), ...(user.Team || []).map(String)]);
-    const requirementIds = new Set();
-
-    requirements.forEach((req) => {
-      const reqId = req._id.toString();
-      if (excludedReqIds.has(reqId)) return;
-      if (clientIds.has(String(req.clientId)) || assignedReqIds.has(reqId)) {
-        requirementIds.add(reqId);
-      }
-    });
-
-    return { requirementIds, recruiterIds };
+    const { clientNames } = await getTeamLeadClientContext(user);
+    return {
+      requirementIds: new Set(),
+      recruiterIds: new Set([user._id.toString()]),
+      teamLeadProfileAccess: buildTeamLeadProfileAccess(user, requirements, clientNames),
+    };
   }
 
   const requirementIds = new Set((user.Requirements || []).map(String));
@@ -84,6 +79,9 @@ function buildScope(user, requirements = []) {
 }
 
 function rowInScope(row, scope) {
+  if (scope.teamLeadProfileAccess) {
+    return candidateRowVisibleToTeamLead(row, scope.teamLeadProfileAccess);
+  }
   if (!scope.requirementIds.has(row.reqId)) return false;
   if (!scope.recruiterIds) return true;
   return row.recruiterIds.some((id) => scope.recruiterIds.has(id));
@@ -327,7 +325,7 @@ async function getRecruiterWorkLogForUser(userId, fromDate, toDate) {
     return { status: 'Error', msg: 'User not found', profiles: [], requirements: [], summary: {} };
   }
 
-  const scope = buildScope(user, requirements);
+  const scope = await buildScope(user, requirements);
   const workLog = computeRecruiterWorkLog(rows, reqMap, userMap, scope, fromDate, toDate);
 
   return {
@@ -347,7 +345,7 @@ async function getTodayMonitorForUser(userId) {
     return { status: 'Error', msg: 'User not found', items: [], summary: {} };
   }
 
-  const scope = buildScope(user, requirements);
+  const scope = await buildScope(user, requirements);
   const monitorPayload = computeTodayMonitorPayload(
     rows,
     reqMap,
@@ -375,7 +373,7 @@ async function getUpcomingInterviewsForUser(userId, days = 7) {
     return { status: 'Error', msg: 'User not found', interviews: [] };
   }
 
-  const scope = buildScope(user, requirements);
+  const scope = await buildScope(user, requirements);
   const interviews = computeUpcomingInterviewsList(rows, reqMap, userMap, scope, days);
 
   return {
@@ -395,7 +393,7 @@ async function getNotificationsForUser(userId) {
     return { status: 'Error', msg: 'User not found', notifications: [], unreadCount: 0 };
   }
 
-  const scope = buildScope(user, requirements);
+  const scope = await buildScope(user, requirements);
   const computedNotifications = computeNotifications(rows, reqMap, userMap, scope, user);
   const [persistedNotifications, todayUnreadCount] = await Promise.all([
     listPersistedNotificationsForUser(userId, 10),

@@ -1,7 +1,9 @@
+const { isAdminOrHrRole } = require('./constants');
+
 const PRIORITY_VALUES = [1, 2, 3, 4, 5];
 
 function canManageRequirementPriority(user) {
-  return user?.UserType === 'Admin';
+  return isAdminOrHrRole(user?.UserType);
 }
 
 function normalizeRequirementPriority(priority) {

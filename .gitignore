@@ -27,3 +27,9 @@ build/
 
 # Cache
 .cache/
+
+# Private offer documents. Never store these under public uploads/.
+private-offer-documents/
+
+# Local migration backups
+backups/

@@ -8,8 +8,13 @@ const {
   sanitizeUserUploadSettings,
 } = require('../utils/requirementUploadSettings.util');
 const { isPositionLimitReached } = require('./requirementPositionLimit.service');
-const { isRequirementExcludedForUser } = require('../utils/teamLeadRequirements');
+const {
+  getTeamLeadClientContext,
+  isRequirementVisibleToTeamLead,
+} = require('../utils/teamLeadRequirements');
 const logger = require('../utils/logger');
+const { isAdminOrHrRole } = require('../utils/constants');
+const { isRequirementWorkBlocked } = require('../utils/requirementType');
 const {
   attachCreatorInfo,
   buildCreatorInfoMapForRequirements,
@@ -162,15 +167,13 @@ async function loadActor(userId, req) {
 async function canUserViewRequirement(user, requirement) {
   if (!user || !requirement) return false;
 
-  const userId = user._id.toString();
   const reqId = requirement._id.toString();
 
-  if (user.UserType === 'Admin') return true;
+  if (user.UserType === 'Admin' || user.UserType === 'HR') return true;
 
   if (user.UserType === 'TeamLead') {
-    if (getCreatedBy(requirement) === userId) return true;
-    if (isRequirementExcludedForUser(user, reqId)) return false;
-    return isUserAssignedToRequirement(user, reqId);
+    const { clientNames } = await getTeamLeadClientContext(user);
+    return isRequirementVisibleToTeamLead(user, requirement, 'all', clientNames);
   }
 
   if (user.UserType === 'User') {
@@ -182,7 +185,7 @@ async function canUserViewRequirement(user, requirement) {
 
 async function canUserEditRequirement(user, requirement) {
   if (!user || !requirement) return false;
-  if (user.UserType === 'Admin') return true;
+  if (isAdminOrHrRole(user.UserType)) return true;
   if (user.UserType === 'TeamLead') {
     return getCreatedBy(requirement) === user._id.toString();
   }
@@ -237,7 +240,12 @@ async function canUserAssignRequirement(user, requirement) {
 
 async function canUserUploadToRequirement(user, requirement) {
   if (!user || !requirement || !isActiveUser(user)) return false;
-  if (user.UserType === 'Admin') return false;
+
+  if (isAdminOrHrRole(user.UserType)) {
+    if (isRequirementWorkBlocked(requirement.requirementtype)) return false;
+    if (await isPositionLimitReached(requirement)) return false;
+    return true;
+  }
 
   const userId = user._id.toString();
   if (!hasUserClaimed(requirement, userId)) return false;
@@ -247,7 +255,7 @@ async function canUserUploadToRequirement(user, requirement) {
 }
 
 function getWorkflowBadge(requirement, user, { canClaim, canUpload }) {
-  if (user && canUpload) return 'Claimed';
+  if (user && canUpload && !isAdminOrHrRole(user.UserType)) return 'Claimed';
   if (user && canClaim) return 'Pending Claim';
   if ((requirement?.assignedMembers || []).length > 0 && getClaimStatus(requirement) !== CLAIM_STATUS.CLAIMED) {
     return 'Assigned';
@@ -287,6 +295,8 @@ async function enrichRequirementWorkflow(requirement, user, options = {}) {
   const manualProfileUploadEnabled = userId ? getManualProfileUploadEnabled(plain, userId) : true;
   const positionLimitReached = userId ? await isPositionLimitReached(plain) : false;
   const uploadStopped = hasClaimed && !manualProfileUploadEnabled;
+  const adminOrHr = Boolean(user && isAdminOrHrRole(user.UserType));
+  const requirementWorkBlocked = isRequirementWorkBlocked(plain.requirementtype);
 
   return {
     ...plain,
@@ -310,11 +320,15 @@ async function enrichRequirementWorkflow(requirement, user, options = {}) {
       positionLimitReached,
       uploadDisabledMessage: canUpload
         ? ''
-        : uploadStopped
-          ? 'Profile upload is currently stopped for you for this requirement.'
-          : hasClaimed && positionLimitReached
+        : adminOrHr && requirementWorkBlocked
+          ? 'Profile upload is not available while this requirement is stopped or closed.'
+          : adminOrHr && positionLimitReached
             ? 'Profile upload is blocked because the required number of positions has been filled.'
-            : 'Claim this requirement before uploading profiles or taking candidate actions.',
+            : uploadStopped
+              ? 'Profile upload is currently stopped for you for this requirement.'
+              : hasClaimed && positionLimitReached
+                ? 'Profile upload is blocked because the required number of positions has been filled.'
+                : 'Claim this requirement before uploading profiles or taking candidate actions.',
       assignDisabledMessage: 'Claim this requirement before assigning it to your team members.',
     },
   };
@@ -459,16 +473,36 @@ async function validateUploadAllowed(requirementId, req, recruiterId) {
     return { allowed: false, statusCode: 401, message: 'User not found.' };
   }
 
-  if (actor.UserType === 'Admin') {
-    return { allowed: false, statusCode: 403, message: 'Admin cannot upload candidate profiles.' };
-  }
-
   const requirement = await NewRequirment.findById(requirementId);
   if (!requirement) {
     return { allowed: false, statusCode: 404, message: 'Requirement not found.' };
   }
 
   if (!(await canUserUploadToRequirement(actor, requirement))) {
+    if (isAdminOrHrRole(actor.UserType)) {
+      if (isRequirementWorkBlocked(requirement.requirementtype)) {
+        return {
+          allowed: false,
+          statusCode: 403,
+          message: 'Profile upload is not available while this requirement is stopped or closed.',
+        };
+      }
+
+      if (await isPositionLimitReached(requirement)) {
+        return {
+          allowed: false,
+          statusCode: 403,
+          message: 'Profile upload is blocked because the required number of positions has been filled.',
+        };
+      }
+
+      return {
+        allowed: false,
+        statusCode: 403,
+        message: 'You cannot upload candidate profiles to this requirement.',
+      };
+    }
+
     const userId = actor._id.toString();
     const hasClaimed = hasUserClaimed(requirement, userId);
     const manualProfileUploadEnabled = getManualProfileUploadEnabled(requirement, userId);

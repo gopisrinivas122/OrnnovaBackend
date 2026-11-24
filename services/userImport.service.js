@@ -1,4 +1,5 @@
 const NewUser = require('../models/User');
+const { USER_TYPES } = require('../utils/constants');
 const {
   mapRowToSchema,
   toStringValue,
@@ -17,7 +18,7 @@ const USER_ALIASES = {
 };
 
 const REQUIRED_KEYS = ['EmpCode', 'EmployeeName', 'Email', 'UserType', 'Status'];
-const ALLOWED_USER_TYPES = new Set(['Admin', 'TeamLead', 'User']);
+const ALLOWED_USER_TYPES = new Set(USER_TYPES);
 const ALLOWED_STATUS = new Set(['Active', 'InActive']);
 const DEFAULT_PASSWORD = 'ChangeMe@123';
 const DEFAULT_PROFILE_PIC = '/Images/icon.png';
@@ -102,4 +103,4 @@ async function importUsers(rows = []) {
   return buildImportResponse(imported, errors);
 }
 
-module.exports = { importUsers, mapUserRow, USER_ALIASES };
+module.exports = { importUsers, mapUserRow, USER_ALIASES, ALLOWED_USER_TYPES };

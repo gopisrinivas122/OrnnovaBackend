@@ -140,20 +140,30 @@ function isRequirementAssignedToTeamLead(user, requirement) {
   return (user.Requirements || []).some((id) => id.toString() === reqId);
 }
 
-function isRequirementVisibleToTeamLead(user, requirement, scope = 'all') {
+function teamLeadOwnsRequirementClient(user, requirement, clientNames = []) {
+  if (!user || !requirement) return false;
+  const clientIdStrings = (user.Clients || []).map((id) => String(id));
+  return matchesAssignedClient(requirement, clientIdStrings, clientNames);
+}
+
+function isRequirementVisibleToTeamLead(user, requirement, scope = 'all', clientNames = []) {
   if (!user || !requirement) return false;
   if (scope === 'mine') {
     return isRequirementCreatedByUser(user, requirement);
   }
-  return isRequirementCreatedByUser(user, requirement)
-    || isRequirementAssignedToTeamLead(user, requirement);
+  if (isRequirementCreatedByUser(user, requirement)) return true;
+  if (isRequirementExcludedForUser(user, requirement._id)) return false;
+  if (isRequirementAssignedToTeamLead(user, requirement)) return true;
+  return teamLeadOwnsRequirementClient(user, requirement, clientNames);
 }
 
-async function fetchTeamLeadRequirementCandidates(user, { lean = false } = {}) {
+async function fetchTeamLeadRequirementCandidates(user, { lean = false, clientContext = null } = {}) {
   if (!user) return [];
 
+  const context = clientContext || await getTeamLeadClientContext(user);
   const userId = user._id.toString();
   const assignedIds = (user.Requirements || []).map((id) => id.toString()).filter(Boolean);
+  const clientIdStrings = (context.clientIdStrings || []).map((id) => String(id)).filter(Boolean);
 
   const orConditions = [
     { createdBy: userId },
@@ -161,6 +171,12 @@ async function fetchTeamLeadRequirementCandidates(user, { lean = false } = {}) {
   ];
   if (assignedIds.length) {
     orConditions.push({ _id: { $in: assignedIds } });
+  }
+  if (clientIdStrings.length) {
+    orConditions.push({ clientId: { $in: clientIdStrings } });
+  }
+  if ((context.clientNames || []).length) {
+    orConditions.push({ client: { $in: context.clientNames } });
   }
 
   const query = NewRequirment.find({ $or: orConditions });
@@ -182,8 +198,11 @@ async function getMyRequirementsForTeamLead(user, { lean = false, withSource = f
 }
 
 async function getRequirementsForTeamLead(user, { lean = false, withSource = false } = {}) {
-  const candidates = await fetchTeamLeadRequirementCandidates(user, { lean });
-  const visible = candidates.filter((req) => isRequirementVisibleToTeamLead(user, req, 'all'));
+  const clientContext = await getTeamLeadClientContext(user);
+  const candidates = await fetchTeamLeadRequirementCandidates(user, { lean, clientContext });
+  const visible = candidates.filter((req) => (
+    isRequirementVisibleToTeamLead(user, req, 'all', clientContext.clientNames)
+  ));
   return enrichTeamLeadRequirements(visible, withSource);
 }
 
@@ -273,10 +292,11 @@ async function userCanAccessRequirement(user, requirement) {
   const userId = user._id.toString();
   const requirementId = requirement._id.toString();
 
-  if (user.UserType === 'Admin') return true;
+  if (user.UserType === 'Admin' || user.UserType === 'HR') return true;
 
   if (user.UserType === 'TeamLead') {
-    return isRequirementVisibleToTeamLead(user, requirement, 'all');
+    const { clientNames } = await getTeamLeadClientContext(user);
+    return isRequirementVisibleToTeamLead(user, requirement, 'all', clientNames);
   }
 
   return (user.Requirements || []).some((id) => id.toString() === requirementId);
@@ -290,6 +310,7 @@ module.exports = {
   isRequirementCreatedByUser,
   isRequirementAssignedToTeamLead,
   isRequirementVisibleToTeamLead,
+  teamLeadOwnsRequirementClient,
   getMyRequirementsForTeamLead,
   getRequirementsForTeamLead,
   getTeamLeadRequirementsByScope,

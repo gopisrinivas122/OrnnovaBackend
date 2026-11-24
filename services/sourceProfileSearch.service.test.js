@@ -4,9 +4,13 @@ const {
   rowMatchesVisibleRequirement,
   rowOwnedByAllowedRecruiters,
   selectVisibleRequirementsForTeamLead,
+  filterRecruiterProfileRows,
   filterTeamLeadProfileRows,
   dedupeSourceProfileRows,
+  candidateMatchesHrRequirementSearch,
+  displayedCandidateStatus,
 } = require('./sourceProfileSearch.service');
+const { buildTeamLeadProfileAccess } = require('../utils/teamLeadProfileAccess');
 
 const visible = buildVisibleRequirementIdSet([
   { _id: 'req-1', regId: '1001' },
@@ -135,5 +139,132 @@ const allDates = filterTeamLeadProfileRows(rows, {
   allowedRecruiterIds: allowedRecruiters,
 });
 assert.ok(allDates.some((row) => row.candidate._id === 'c-team'), 'team recruiter profile on assigned req is included');
+
+const recruiterVisible = buildVisibleRequirementIdSet([
+  { _id: 'req-assigned', regId: '2001' },
+  { _id: 'req-claimed', regId: '2002' },
+]);
+
+const recruiterRows = [
+  {
+    reqId: 'req-assigned',
+    recruiterIds: ['recruiter-1'],
+    candidate: {
+      _id: 'c-rahul',
+      firstName: 'Rahul',
+      lastName: 'Kumar',
+      recruiterId: ['recruiter-1'],
+      savedStatus: 'Uploaded',
+    },
+  },
+  {
+    reqId: 'req-claimed',
+    recruiterIds: ['recruiter-1'],
+    candidate: {
+      _id: 'c-claimed',
+      firstName: 'Rahul',
+      lastName: 'Claimed',
+      recruiterId: ['recruiter-1'],
+      savedStatus: 'Uploaded',
+    },
+  },
+  {
+    reqId: 'req-assigned',
+    recruiterIds: ['recruiter-2'],
+    candidate: {
+      _id: 'c-other',
+      firstName: 'Rahul',
+      lastName: 'Other',
+      recruiterId: ['recruiter-2'],
+      savedStatus: 'Uploaded',
+    },
+  },
+  {
+    reqId: 'req-outside',
+    recruiterIds: ['recruiter-1'],
+    candidate: {
+      _id: 'c-outside',
+      firstName: 'Rahul',
+      lastName: 'Outside',
+      recruiterId: ['recruiter-1'],
+      savedStatus: 'Uploaded',
+    },
+  },
+];
+
+const rahulMatches = filterRecruiterProfileRows(recruiterRows, {
+  visibleReqIds: recruiterVisible,
+  recruiterId: 'recruiter-1',
+  name: 'rahul kumar',
+});
+assert.deepStrictEqual(rahulMatches.map((row) => row.candidate._id), ['c-rahul']);
+
+const partialMatches = filterRecruiterProfileRows(recruiterRows, {
+  visibleReqIds: recruiterVisible,
+  recruiterId: 'recruiter-1',
+  name: 'Rahul',
+});
+assert.deepStrictEqual(
+  partialMatches.map((row) => row.candidate._id).sort(),
+  ['c-claimed', 'c-rahul'],
+);
+assert.ok(!partialMatches.some((row) => row.candidate._id === 'c-other'));
+assert.ok(!partialMatches.some((row) => row.candidate._id === 'c-outside'));
+
+const missing = filterRecruiterProfileRows(recruiterRows, {
+  visibleReqIds: recruiterVisible,
+  recruiterId: 'recruiter-1',
+  name: 'nobody',
+});
+assert.strictEqual(missing.length, 0);
+
+const owningLead = {
+  _id: 'tl-1',
+  UserType: 'TeamLead',
+  Clients: ['client-ada'],
+  Requirements: ['req-assigned'],
+  excludedRequirements: [],
+};
+const assignedOnlyLead = {
+  _id: 'tl-1',
+  UserType: 'TeamLead',
+  Clients: ['client-other'],
+  Requirements: ['req-assigned'],
+  excludedRequirements: [],
+};
+const accessRequirements = [
+  { _id: 'req-created', clientId: 'client-ada', regId: 'C1' },
+  { _id: 'req-assigned', clientId: 'client-ada', regId: 'A1' },
+  { _id: 'req-other-tl', clientId: 'client-ada', regId: 'O1' },
+];
+const ownerRows = filterTeamLeadProfileRows(rows, {
+  profileAccess: buildTeamLeadProfileAccess(owningLead, accessRequirements),
+});
+assert.ok(ownerRows.some((row) => row.candidate._id === 'c-outsider'), 'client owner sees other uploaders');
+assert.ok(ownerRows.some((row) => row.candidate._id === 'c-other-req'), 'client owner sees every requirement on the client');
+
+const assignedRows = filterTeamLeadProfileRows(rows, {
+  profileAccess: buildTeamLeadProfileAccess(assignedOnlyLead, accessRequirements),
+});
+assert.deepStrictEqual(assignedRows, [], 'assigned team lead does not see other users on a client they do not own');
+
+const hrCandidate = {
+  firstName: 'Asha',
+  lastName: 'Rao',
+  Status: [
+    { Status: 'Joined', Date: '2026-06-01T00:00:00.000Z' },
+    { Status: 'Offer Released', Date: '2026-01-01T00:00:00.000Z' },
+  ],
+};
+assert.strictEqual(displayedCandidateStatus(hrCandidate), 'Joined');
+assert.ok(candidateMatchesHrRequirementSearch(hrCandidate, 'Asha Rao'));
+assert.ok(candidateMatchesHrRequirementSearch(hrCandidate, 'joined'));
+assert.ok(!candidateMatchesHrRequirementSearch(hrCandidate, 'Offer Released'));
+assert.strictEqual(
+  displayedCandidateStatus({ firstName: 'No', lastName: 'Status', Status: [] }),
+  'No Action Taken',
+);
+assert.ok(candidateMatchesHrRequirementSearch({ firstName: 'No', lastName: 'Status', Status: [] }, 'No Action Taken'));
+assert.ok(!candidateMatchesHrRequirementSearch(hrCandidate, '   '));
 
 console.log('sourceProfileSearch.service.test.js passed');

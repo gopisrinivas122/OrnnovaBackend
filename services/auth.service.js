@@ -3,6 +3,7 @@ const NewUser = require('../models/User');
 const { comparePassword, hashPassword, isPasswordHashed } = require('../utils/password');
 const { signAccessToken } = require('../utils/authToken');
 const { sendPasswordResetEmail } = require('./email.service');
+const { isSupportedUserType } = require('../utils/constants');
 
 const RESET_TOKEN_EXPIRY_MS = 60 * 60 * 1000;
 
@@ -53,6 +54,15 @@ const login = async ({ Email, Password }) => {
       error: {
         status: 403,
         body: { status: 'Failed', msg: 'Your account is InActive ❌' },
+      },
+    };
+  }
+
+  if (!isSupportedUserType(user.UserType)) {
+    return {
+      error: {
+        status: 403,
+        body: { status: 'Failed', msg: 'This account role is no longer supported.' },
       },
     };
   }

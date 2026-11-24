@@ -15,6 +15,10 @@ const {
   resolveDocumentForDownload,
   unlinkStoredUploadSafely,
   toWebUploadPath,
+  rememberUploadedOriginalFilename,
+  stampNewUploadTitle,
+  contentDispositionInline,
+  buildDocumentPreviewPath,
   ALLOWED_DOCUMENT_FIELDS,
 } = require('../services/candidateDocumentUpdate.service');
 const { sendEmailSafely } = require('../config/mail');
@@ -27,7 +31,6 @@ const {
 } = require('../services/adminAnalytics.service');
 const { getEmployeeWorkSummary } = require('../services/employeeWorkSummary.service');
 const {
-  createStatusRemarkNotifications,
   markNotificationAsRead,
   markAllNotificationsAsRead,
   countUnreadPersistedNotifications,
@@ -48,11 +51,21 @@ const {
   getRequirementsForTeamLead,
   getTeamLeadRequirementsByScope,
   getRequirementsForUser,
+  getTeamLeadClientContext,
   userCanAccessRequirement,
   attachRequirementToTeamLead,
   linkRequirementToMatchingTeamLeads,
   excludeRequirementFromTeamLead,
 } = require('../utils/teamLeadRequirements');
+const {
+  buildTeamLeadProfileAccess,
+  candidateRowVisibleToTeamLead,
+  classifyTeamLeadRequirement,
+  findRequirementByKey,
+  resolveTeamLeadRequirementAccess,
+  authorizeTeamLeadProfileStatusUpdate,
+  authorizeTeamLeadProfileView,
+} = require('../utils/teamLeadProfileAccess');
 const {
   REQUIREMENT_TYPE_OPTIONS,
   isValidRequirementType,
@@ -90,6 +103,7 @@ const { importRequirements } = require('../services/requirementImport.service');
 const { importClients } = require('../services/clientImport.service');
 const { hashPassword } = require('../utils/password');
 const { activeUserFilter, INACTIVE_STATUS, isActiveUser } = require('../utils/userStatus');
+const { isSupportedUserType, isAdminOrHrRole } = require('../utils/constants');
 const {
   claimRequirement,
   unclaimRequirement,
@@ -139,10 +153,11 @@ const {
 } = require('../services/sourceProfileSearch.service');
 const {
   isRejectedStatus,
-  getRejectionStageLabel,
   getLatestStatus,
   isActiveCandidate,
 } = require('../utils/candidateStatusMap');
+const { appendCandidateStatusHistory, CandidateStatusUpdateError } = require('../services/candidateStatusUpdate.service');
+const { offerWorkflowService } = require('../services/offerWorkflow.service');
 const { candidateOwnedByUser } = require('../utils/candidateOwnership.util');
 
 module.exports = (app) => {
@@ -190,6 +205,10 @@ app.post("/newUser", upload.array("ProfilePic"), asyncHandler(async (req, res) =
 
     if (!EmpCode || !EmployeeName || !Email || !Password || !UserType || !Status) {
         return res.status(400).json({ status: "failure", msg: "Required fields are missing" });
+    }
+
+    if (!isSupportedUserType(UserType)) {
+        return res.status(400).json({ status: "failure", msg: "Invalid UserType" });
     }
 
     const userArr = await NewUser.find({ Email });
@@ -421,7 +440,7 @@ app.delete("/deleteUser/:id", asyncHandler(async (req, res) => {
 app.get("/getUserData/:id", async (req, res) => {
     try {
         // Find the user by the given ID
-        const user = await NewUser.findById(req.params.id);
+        const user = await NewUser.findById(req.params.id).select('-Password -token -verifytoken');
 
         if (!user) {
             return res.status(404).json({ msg: 'User not found' });
@@ -434,7 +453,7 @@ app.get("/getUserData/:id", async (req, res) => {
         const teamUserDetails = await NewUser.find({
             _id: { $in: teamUserIds },
             ...activeUserFilter,
-        });
+        }).select('-Password -token -verifytoken');
 
         // Combine user data and team details into a single response object
         const response = {
@@ -452,7 +471,7 @@ app.get("/getUserData/:id", async (req, res) => {
 app.get("/getUserdatatoUpdate/:id", async (req, res) => {
     try {
         // Step 1: Find the user by their ID
-        const user = await NewUser.findById(req.params.id);
+        const user = await NewUser.findById(req.params.id).select('-Password -token -verifytoken');
 
         if (!user) {
             return res.status(404).json({ message: "User not found" });
@@ -465,7 +484,7 @@ app.get("/getUserdatatoUpdate/:id", async (req, res) => {
         const teamMembers = await NewUser.find({
             _id: { $in: teamMemberIds },
             ...activeUserFilter,
-        });
+        }).select('-Password -token -verifytoken');
 
         // Step 4: Respond with both user details and team members details
         res.json({
@@ -496,6 +515,10 @@ app.put('/updateUser/:id', async (req, res) => {
             return res.status(404).json({ msg: 'User not found' });
         }
 
+        if (!isSupportedUserType(usertype)) {
+            return res.status(400).json({ status: 'failure', msg: 'Invalid UserType' });
+        }
+
         // Merge team members only when usertype is TeamLead; replace selection and keep active users
         let teamObjectIds = currentUser.Team;
         if (usertype === "TeamLead" && Array.isArray(Team)) {
@@ -520,7 +543,7 @@ app.put('/updateUser/:id', async (req, res) => {
                 Team: teamObjectIds,
             },
             { new: true }
-        );
+        ).select('-Password -token -verifytoken');
 
         if (updatedUser && status === INACTIVE_STATUS && currentUser.Status !== INACTIVE_STATUS) {
             await NewUser.updateMany(
@@ -1133,6 +1156,8 @@ app.post('/Candidates', uploadFields, async (req, res) => {
 
         candidateData.lwd = String(candidateData.lwd || '').trim();
         candidateData.feedback = String(candidateData.feedback || '').trim();
+        delete candidateData.updatedResumeOriginalName;
+        delete candidateData.ornnovaProfileOriginalName;
 
         if (!candidateData.lwd) {
             return res.status(400).json({ message: 'LWD is required.' });
@@ -1143,13 +1168,19 @@ app.post('/Candidates', uploadFields, async (req, res) => {
 
         // Attach file paths if they exist and ensure proper formatting
 if (req.files['updatedResume'] && req.files['updatedResume'][0]) {
-    const filePath = req.files['updatedResume'][0].path;
+    const uploadedResume = req.files['updatedResume'][0];
+    const filePath = uploadedResume.path;
     candidateData.updatedResume = path.posix.join('/uploads', path.basename(filePath)); // Use path.posix to normalize slashes
+    rememberUploadedOriginalFilename(candidateData, 'updatedResume', uploadedResume);
+    stampNewUploadTitle(uploadedResume);
 }
 
 if (req.files['ornnovaProfile'] && req.files['ornnovaProfile'][0]) {
-    const filePath = req.files['ornnovaProfile'][0].path;
+    const uploadedProfile = req.files['ornnovaProfile'][0];
+    const filePath = uploadedProfile.path;
     candidateData.ornnovaProfile = path.posix.join('/uploads', path.basename(filePath)); // Use path.posix to normalize slashes
+    rememberUploadedOriginalFilename(candidateData, 'ornnovaProfile', uploadedProfile);
+    stampNewUploadTitle(uploadedProfile);
 }
 
 if (req.files['candidateImage'] && req.files['candidateImage'][0]) {
@@ -1257,6 +1288,18 @@ app.get('/viewactions/:id/:userid', async (req, res) => {
     }
 
     try {
+        if (req.user?.role === 'TeamLead') {
+            const teamLead = await NewUser.findById(req.user.id);
+            const requirementRecord = await findRequirementByKey(id);
+            const { level } = await resolveTeamLeadRequirementAccess(teamLead, requirementRecord);
+            if (level === 'none') {
+                return res.status(403).json({ message: 'You do not have access to this requirement.' });
+            }
+            if (level !== 'full' && String(userid) !== String(req.user.id)) {
+                return res.status(403).json({ message: 'You do not have permission to view these source profiles.' });
+            }
+        }
+
         // Find the document based on the reqId (id in this case) and recruiterId (userid)
         const requirement = await CandidateModel.findOne({ reqId: id, recruiterId: userid }).exec();
 
@@ -1289,6 +1332,18 @@ app.delete('/api/candidates/:id', async (req, res) => {
     try {
         const candidateId = req.params.id;
 
+        if (req.user?.role === 'TeamLead') {
+            const context = await loadCandidateDocumentContext(candidateId);
+            if (context.error) {
+                return res.status(context.error.statusCode).json({ message: context.error.message });
+            }
+            const teamLead = await NewUser.findById(req.user.id);
+            const viewDecision = await authorizeTeamLeadProfileView(teamLead, context);
+            if (!viewDecision.ok) {
+                return res.status(viewDecision.statusCode).json({ message: viewDecision.message });
+            }
+        }
+
         // Find the document that contains the candidate to be deleted
         const updatedDocument = await CandidateModel.findOneAndUpdate(
             { "candidates._id": candidateId }, // Find the document containing the candidate
@@ -1320,6 +1375,17 @@ app.get('/adminviewactions/:id', async (req, res) => {
 
         // Find all documents with the given reqId
         const requirements = await CandidateModel.find({ reqId: id }).exec();
+        let teamLeadOwnProfilesOnly = false;
+
+        if (req.user?.role === 'TeamLead') {
+            const teamLead = await NewUser.findById(req.user.id);
+            const requirementRecord = await findRequirementByKey(id);
+            const { level } = await resolveTeamLeadRequirementAccess(teamLead, requirementRecord);
+            if (level === 'none') {
+                return res.status(403).json({ message: 'You do not have access to this requirement.' });
+            }
+            teamLeadOwnProfilesOnly = level !== 'full';
+        }
 
         // Log the fetched requirements to check if data is returned
         console.log("Requirements found:", requirements);
@@ -1331,6 +1397,7 @@ app.get('/adminviewactions/:id', async (req, res) => {
                 console.log("Candidates in requirement:", req.candidates);
 
                 return req.candidates.filter(candidate => 
+                    (!teamLeadOwnProfilesOnly || candidateOwnedByUser(candidate, req.recruiterId, req.user.id)) &&
                     candidate.savedStatus === 'Uploaded' && 
                     candidate.Status.every(statusObj => 
                         !['Client Rejected', 'L1 Rejected', 'L2 Rejected', 'Rejected', 'Declined'].includes(statusObj.Status)
@@ -1395,7 +1462,16 @@ app.get('/api/requirements/:id/claimedByDetails', async (req, res) => {
 app.get('/api/requirements/:id/rejected-candidates', async (req, res) => {
     try {
         const requirementId = req.params.id;
-        const userId = req.query.userId || null;
+        let userId = req.query.userId || null;
+        if (req.user?.role === 'TeamLead') {
+            userId = req.user.id;
+            const teamLead = await NewUser.findById(req.user.id);
+            const requirement = await findRequirementByKey(requirementId);
+            const { level } = await resolveTeamLeadRequirementAccess(teamLead, requirement);
+            if (level === 'none') {
+                return res.status(403).json({ message: 'You do not have access to this requirement.' });
+            }
+        }
         const candidateDocs = await findCandidateDocsForRequirementKey(requirementId);
 
         if (!candidateDocs.length) {
@@ -1491,10 +1567,23 @@ app.get('/api/recruiters/:reqId', async (req, res) => {
             return res.status(404).json({ message: 'Requirement(s) not found' });
         }
 
+        const recruiterOptions = { uploadedOnly: true };
+        if (req.user?.role === 'TeamLead') {
+            const teamLead = await NewUser.findById(req.user.id);
+            const requirement = await findRequirementByKey(reqId);
+            const { level } = await resolveTeamLeadRequirementAccess(teamLead, requirement);
+            if (level === 'none') {
+                return res.status(403).json({ message: 'You do not have access to this requirement.' });
+            }
+            if (level !== 'full') {
+                recruiterOptions.ownerUserId = String(teamLead._id);
+            }
+        }
+
         const recruitersWithCandidateCountAndDetails = await buildRecruitersWithCandidatesForRequirement(
           requirements,
           reqId,
-          { uploadedOnly: true },
+          recruiterOptions,
         );
 
         if (!recruitersWithCandidateCountAndDetails) {
@@ -1597,6 +1686,18 @@ app.get('/api/candidates', async (req, res) => {
             return res.status(400).json({ message: 'Recruiter ID and Requirement ID are required' });
         }
 
+        if (req.user?.role === 'TeamLead') {
+            const teamLead = await NewUser.findById(req.user.id);
+            const requirement = await findRequirementByKey(reqId);
+            const { level } = await resolveTeamLeadRequirementAccess(teamLead, requirement);
+            if (level === 'none') {
+                return res.status(403).json({ message: 'You do not have access to this requirement.' });
+            }
+            if (level !== 'full' && String(recruiterId) !== String(req.user.id)) {
+                return res.status(403).json({ message: 'You do not have permission to view these source profiles.' });
+            }
+        }
+
         // Find candidates by recruiterId and reqId
         const candidatesData = await CandidateModel.find({
             recruiterId: recruiterId,
@@ -1645,7 +1746,10 @@ app.get('/candidate/:id', async (req, res) => {
         }
 
         // Send the candidate data as a response
-        res.json(serializeCandidateForResponse(candidate));
+        res.json({
+            ...serializeCandidateForResponse(candidate),
+            canUpdateProfileStatus: viewAccess.canUpdateProfileStatus !== false,
+        });
     } catch (err) {
         console.error('Error fetching candidate:', err);
         res.status(500).json({ message: 'Internal Server Error' });
@@ -1671,6 +1775,18 @@ app.put('/candidates/:id', async (req, res) => {
             return res.status(404).json({ message: 'Candidate not found in the array' });
         }
 
+        if (req.user?.role === 'TeamLead') {
+            const teamLead = await NewUser.findById(req.user.id);
+            const viewDecision = await authorizeTeamLeadProfileView(teamLead, {
+                reqId: mainDoc.reqId,
+                candidate: mainDoc.candidates[candidateIndex],
+                docRecruiterIds: mainDoc.recruiterId,
+            });
+            if (!viewDecision.ok) {
+                return res.status(viewDecision.statusCode).json({ message: viewDecision.message });
+            }
+        }
+
         const existingCandidate = mainDoc.candidates[candidateIndex];
         if (getLatestStatus(existingCandidate) !== 'No Action Taken') {
             return res.status(403).json({
@@ -1681,6 +1797,9 @@ app.put('/candidates/:id', async (req, res) => {
         if (Object.prototype.hasOwnProperty.call(updateData, 'lwd')) {
             updateData.lwd = String(updateData.lwd ?? '').trim();
         }
+
+        delete updateData.updatedResumeOriginalName;
+        delete updateData.ornnovaProfileOriginalName;
 
         // Update the candidate details
         mainDoc.candidates[candidateIndex] = { ...mainDoc.candidates[candidateIndex]._doc, ...updateData };
@@ -1961,10 +2080,10 @@ app.post('/unassignReq/:userId/:requirementId', async (req, res) => {
         const reqIdStr = requirementId.toString();
 
         if (user.UserType === 'TeamLead') {
-            if (actor?.UserType !== 'Admin') {
+            if (!isAdminOrHrRole(actor?.UserType)) {
                 return res.status(403).json({
                     status: 'error',
-                    msg: 'Only Admin can unassign requirements from Team Leads.',
+                    msg: 'Only Admin or HR can unassign requirements from Team Leads.',
                 });
             }
 
@@ -2047,10 +2166,22 @@ app.get('/getTeamRequirementsCount/:userId', async (req, res) => {
             return res.status(404).json({ status: "Error", msg: "No active team members associated with this user" });
         }
 
-        const teamRequirements = await CandidateModel.find({
-            recruiterId: { $in: activeMemberIds },
-            reqId : { $in: user.Requirements }
-        });
+        let profileAccess = null;
+        let teamRequirements;
+        if (user.UserType === 'TeamLead') {
+            const visibleRequirements = await getRequirementsForTeamLead(user, { lean: true });
+            const { clientNames } = await getTeamLeadClientContext(user);
+            profileAccess = buildTeamLeadProfileAccess(user, visibleRequirements, clientNames);
+            const reqIdValues = [...profileAccess.fullKeys, ...profileAccess.ownKeys];
+            teamRequirements = reqIdValues.length
+                ? await CandidateModel.find({ reqId: { $in: reqIdValues } })
+                : [];
+        } else {
+            teamRequirements = await CandidateModel.find({
+                recruiterId: { $in: activeMemberIds },
+                reqId: { $in: user.Requirements },
+            });
+        }
        
 
         if (teamRequirements.length === 0) {
@@ -2067,8 +2198,21 @@ app.get('/getTeamRequirementsCount/:userId', async (req, res) => {
         const today = new Date();
         today.setHours(0, 0, 0, 0); // Set time to midnight for today's comparison
 
+        const recruiterIdsToReport = new Set(activeMemberIds);
+        if (profileAccess) {
+            teamRequirements.forEach((doc) => {
+                if (!profileAccess.fullKeys.has(String(doc.reqId || ''))) return;
+                const uploaderIds = Array.isArray(doc.recruiterId)
+                    ? doc.recruiterId.map(String)
+                    : [String(doc.recruiterId || '')];
+                uploaderIds.forEach((id) => {
+                    if (id) recruiterIdsToReport.add(id);
+                });
+            });
+        }
+
         // Step 5: Iterate through each team member (recruiter)
-        for (const recruiterId of activeMemberIds) {
+        for (const recruiterId of recruiterIdsToReport) {
             let recruiterTotalCandidates = 0;
             let recruiterTodaysCandidates = 0;
             let recruiterCandidatesData = [];
@@ -2087,6 +2231,15 @@ app.get('/getTeamRequirementsCount/:userId', async (req, res) => {
             // Process each requirement for the recruiter
             recruiterRequirements.forEach(req => {
                 req.candidates.forEach(candidate => {
+                    if (profileAccess && !candidateRowVisibleToTeamLead({
+                        reqId: req.reqId,
+                        candidate,
+                        recruiterIds: Array.isArray(req.recruiterId)
+                            ? req.recruiterId.map(String)
+                            : [String(req.recruiterId || '')],
+                    }, profileAccess)) {
+                        return;
+                    }
                     // Only include candidates with savedStatus as "Uploaded"
                     if (candidate.savedStatus === "Uploaded") {
                         recruiterTotalCandidates++; // Increment recruiter's total candidates count
@@ -2226,8 +2379,23 @@ app.get('/getRequirementsCandidatesCount/:recruiterId/:userId', async (req, res)
             _id: { $in: reqIds } // Find requirements with matching _id in the reqIds
         });
 
+        let visibleRequirements = requirements;
+        if (userData.UserType === 'TeamLead') {
+            const { clientNames } = await getTeamLeadClientContext(userData);
+            visibleRequirements = requirements.filter((requirement) => {
+                const level = classifyTeamLeadRequirement(userData, requirement, clientNames);
+                if (level === 'none') return false;
+                if (level !== 'full' && String(recruiterId) !== String(userData._id)) return false;
+                return true;
+            });
+        }
+
+        if (!visibleRequirements.length) {
+            return res.status(404).json({ status: "Error", msg: "No common requirements found for the user and recruiter" });
+        }
+
         // Step 6: For each requirement, calculate the candidate count based on the length of the candidates array
-        const requirementsWithCandidateCount = await Promise.all(requirements.map(async (req) => {
+        const requirementsWithCandidateCount = await Promise.all(visibleRequirements.map(async (req) => {
             // Find the specific requirement in the recruiterData
             const recruiterReq = recruiterRequirements.find(rReq => rReq._id.toString() === req._id.toString());
 
@@ -2284,6 +2452,10 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
             return res.json([]);
         }
 
+        const clientContext = user.UserType === 'TeamLead'
+            ? await getTeamLeadClientContext(user)
+            : { clientNames: [] };
+
         // Get today's date in UTC
         const today = new Date();
         today.setUTCHours(0, 0, 0, 0); // Start of today
@@ -2305,13 +2477,25 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
                 const usernamesForThisRequirement = assignedUsersForThisRequirement.map(user => user.EmployeeName);
                 const userCountForThisRequirement = assignedUsersForThisRequirement.length;
 
-                // Step 6: Get candidate details with savedStatus filter applied only where needed
-                const requirementWithCandidates = await CandidateModel.find({
+                const accessLevel = user.UserType === 'TeamLead'
+                    ? classifyTeamLeadRequirement(user, requirement, clientContext.clientNames)
+                    : 'team';
+                const canUpdateProfileStatus = user.UserType !== 'TeamLead' || accessLevel === 'full';
+                let candidateQuery = {
                     reqId: requirementId,
                     recruiterId: {
-                        $in: [...activeTeamIds, userId]
-                    }
-                }).select('candidates reqId recruiterId');
+                        $in: [...activeTeamIds, userId],
+                    },
+                };
+                if (user.UserType === 'TeamLead' && accessLevel === 'full') {
+                    candidateQuery = { reqId: requirementId };
+                } else if (user.UserType === 'TeamLead') {
+                    candidateQuery = { reqId: requirementId, recruiterId: userId };
+                }
+
+                // Step 6: Get candidate details with savedStatus filter applied only where needed
+                const requirementWithCandidates = await CandidateModel.find(candidateQuery)
+                    .select('candidates reqId recruiterId');
 
                 // All user candidates regardless of savedStatus
                 const totalUserCandidatesDetails = requirementWithCandidates ? requirementWithCandidates.flatMap(req =>
@@ -2329,8 +2513,19 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
                     )
                 ) : [];
 
+                const knownUploaderIds = new Set([String(userId), ...activeTeamIds.map((teamId) => String(teamId))]);
+                const otherCandidates = accessLevel === 'full' && requirementWithCandidates
+                    ? requirementWithCandidates.flatMap((req) => {
+                        const uploaderIds = Array.isArray(req.recruiterId)
+                            ? req.recruiterId.map(String)
+                            : [String(req.recruiterId || '')];
+                        if (uploaderIds.some((id) => knownUploaderIds.has(id))) return [];
+                        return (req.candidates || []).filter(isActiveCandidate);
+                    })
+                    : [];
+
                 // Active upload counts only
-                const totalCandidateCount = userCandidates.length + teamCandidates.length;
+                const totalCandidateCount = userCandidates.length + teamCandidates.length + otherCandidates.length;
 
                 // Filter for today's active candidates for both user and team
                 const todayUserCandidates = userCandidates.filter(candidate => {
@@ -2343,10 +2538,15 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
                     return uploadedOnDate >= today && uploadedOnDate < tomorrow;
                 });
 
-                const todayCandidateCount = todayUserCandidates.length + todayTeamCandidates.length;
+                const todayOtherCandidates = otherCandidates.filter(candidate => {
+                    const uploadedOnDate = new Date(candidate.uploadedOn);
+                    return uploadedOnDate >= today && uploadedOnDate < tomorrow;
+                });
+
+                const todayCandidateCount = todayUserCandidates.length + todayTeamCandidates.length + todayOtherCandidates.length;
 
                 // Combine active user and team candidates
-                const totalCandidatesDetails = [...userCandidates, ...teamCandidates];
+                const totalCandidatesDetails = [...userCandidates, ...teamCandidates, ...otherCandidates];
                 const allUploadedCandidatesDetails = requirementWithCandidates ? requirementWithCandidates.flatMap(req =>
                     req.candidates.filter((candidate) => candidate.savedStatus === 'Uploaded')
                 ) : [];
@@ -2355,12 +2555,13 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
                 ).length;
 
                 // Combine today's user and team candidates
-                const combinedTodayCandidates = [...todayUserCandidates, ...todayTeamCandidates];
+                const combinedTodayCandidates = [...todayUserCandidates, ...todayTeamCandidates, ...todayOtherCandidates];
 
                 // Step 9: Return the details
                 const enrichedRequirement = await enrichRequirementWorkflow(requirement, user);
 
                 return {
+                    canUpdateProfileStatus,
                     requirementDetails: enrichedRequirement,
                     creatorName: requirement.creatorName,
                     creatorUserType: requirement.creatorUserType,
@@ -2370,13 +2571,13 @@ app.get('/requirementDetailsWithAssignedUsers/:userId', async (req, res) => {
                     totalCandidateCount: totalCandidateCount,
                     todayCandidateCount: todayCandidateCount,
                     userCandidatesCount: userCandidates.length,
-                    teamCandidatesCount: teamCandidates.length,
+                    teamCandidatesCount: teamCandidates.length + otherCandidates.length,
                     userActiveCandidatesDetails: serializeCandidateList(userCandidates),
                     todayUserCandidates: serializeCandidateList(todayUserCandidates),
-                    todayTeamCandidates: serializeCandidateList(todayTeamCandidates),
+                    todayTeamCandidates: serializeCandidateList([...todayTeamCandidates, ...todayOtherCandidates]),
                     totalUserCandidatesDetails: serializeCandidateList(totalUserCandidatesDetails),
                     totalUserCandidatesCount: totalUserCandidatesCount,
-                    totalTeamCandidatesDetails: serializeCandidateList(teamCandidates),
+                    totalTeamCandidatesDetails: serializeCandidateList([...teamCandidates, ...otherCandidates]),
                     totalCandidatesDetails: serializeCandidateList(totalCandidatesDetails),
                     rejectedCandidatesCount,
                     combinedTodayCandidates: serializeCandidateList(combinedTodayCandidates),
@@ -2472,7 +2673,7 @@ app.put('/editRequirement/:id', jdPdfUpload.single('jdPdf'), async (req, res) =>
             return res.status(400).json({ message: uploadSettingsUpdate.message });
         }
 
-        if (actor.UserType !== 'Admin') {
+        if (!isAdminOrHrRole(actor.UserType)) {
             delete updateData.priority;
         } else if (Object.prototype.hasOwnProperty.call(updateData, 'priority')) {
             const normalizedPriority = normalizeRequirementPriority(updateData.priority);
@@ -2521,7 +2722,10 @@ app.get('/api/requirements/:id/jd', async (req, res) => {
 
         const actorId = req.user?.id || req.query.userId;
         const actor = actorId ? await NewUser.findById(actorId) : null;
-        if (!actor || !userCanAccessRequirement(actor, requirement)) {
+        if (!actor) {
+            return res.status(403).json({ message: 'You do not have access to this JD PDF.' });
+        }
+        if (actor.UserType === 'TeamLead' && !(await userCanAccessRequirement(actor, requirement))) {
             return res.status(403).json({ message: 'You do not have access to this JD PDF.' });
         }
 
@@ -2545,95 +2749,77 @@ app.get('/api/requirements/:id/jd', async (req, res) => {
 app.put('/updatestatus/:candidateId', async (req, res) => {
     const candidateId = req.params.candidateId;
     const { status, interviewDate, interviewTime, remark, updatedBy } = req.body;
-    const INTERVIEW_SCHEDULE_STATUSES = ['L1 Schedule', 'L2 Schedule', 'L3 Schedule'];
     const statusToPersist = status;
 
     if (!status) {
         return res.status(400).json({ message: 'Status is required' });
     }
 
-    if (!remark || !String(remark).trim()) {
-        return res.status(400).json({ message: 'Remark is required when updating status.' });
-    }
-
-    if (INTERVIEW_SCHEDULE_STATUSES.includes(status) && !interviewDate) {
-        return res.status(400).json({
-            message: 'Interview date is required when status is L1 Schedule, L2 Schedule, or L3 Schedule.',
+    const HR_FOLLOW_UP_STATUS_UPDATES = new Set([
+        'Offer Released',
+        'Offer Accepted',
+        'Onboard Confirmation',
+        'Joined',
+        'Candidate Declined',
+    ]);
+    if (req.user?.role === 'HR' && !HR_FOLLOW_UP_STATUS_UPDATES.has(status)) {
+        return res.status(403).json({
+            message: 'HR can update only Offer Released, Offer Accepted, Onboard Confirmation, Joined, and Candidate Declined.',
         });
     }
 
+    if (req.user?.role === 'TeamLead') {
+        const teamLead = await NewUser.findById(req.user.id);
+        const context = await loadCandidateDocumentContext(candidateId);
+        if (context.error) {
+            return res.status(context.error.statusCode).json({ message: context.error.message });
+        }
+        const statusDecision = await authorizeTeamLeadProfileStatusUpdate(teamLead, context);
+        if (!statusDecision.ok) {
+            return res.status(statusDecision.statusCode).json({ message: statusDecision.message });
+        }
+    }
+
     try {
-        const trimmedRemark = String(remark).trim();
-        const updateOps = {
-            $push: {
-                'candidates.$.Status': {
-                    Status: statusToPersist,
-                    Date: new Date(),
-                    Remark: trimmedRemark,
-                    Remarks: [{ text: trimmedRemark, createdAt: new Date() }],
-                },
-            },
-            $set: {
-                'candidates.$.remark': trimmedRemark,
-            },
-        };
-
-        if (interviewDate) {
-            updateOps.$set['candidates.$.interviewDate'] = interviewDate;
-            updateOps.$set['candidates.$.interviewTime'] = interviewTime || '';
-        }
-
-        if (isRejectedStatus(statusToPersist)) {
-            const rejectedByUser = updatedBy
-                ? await NewUser.findById(updatedBy).select('EmployeeName').lean()
-                : null;
-            updateOps.$set['candidates.$.rejectionStage'] = getRejectionStageLabel(statusToPersist);
-            updateOps.$set['candidates.$.rejectedDate'] = new Date();
-            updateOps.$set['candidates.$.rejectedBy'] = updatedBy ? String(updatedBy) : '';
-            updateOps.$set['candidates.$.rejectedByName'] = rejectedByUser?.EmployeeName || '';
-            updateOps.$set['candidates.$.rejectionReason'] = String(remark).trim();
-        }
-
-        const updatedMain = await CandidateModel.findOneAndUpdate(
-            { 'candidates._id': candidateId },
-            updateOps,
-            { new: true }
-        );
-
-        if (!updatedMain) {
-            return res.status(404).json({ message: 'Candidate not found in any main document' });
-        }
-
-        const updatedCandidate = updatedMain.candidates.id(candidateId);
-        const latestStatusEntry = updatedCandidate?.Status?.length
-            ? updatedCandidate.Status[updatedCandidate.Status.length - 1]
-            : null;
-        const actorId = req.user?.id || updatedBy;
-
-        if (latestStatusEntry && actorId) {
+        const result = await appendCandidateStatusHistory({
+            candidateId,
+            status: statusToPersist,
+            remark,
+            interviewDate,
+            interviewTime,
+            rejectionActorId: updatedBy,
+            notificationActorId: req.user?.id || updatedBy,
+        });
+        let offerId = '';
+        if (req.user?.role === 'HR' && HR_FOLLOW_UP_STATUS_UPDATES.has(statusToPersist)) {
             try {
-                await createStatusRemarkNotifications({
-                    actorId,
-                    candidate: updatedCandidate,
-                    mainDocument: updatedMain,
-                    requirementId: updatedMain.reqId,
+                const ensured = await offerWorkflowService.ensureOfferForHrManualStatus({
+                    tokenUser: {
+                        id: req.user.id,
+                        role: req.user.role,
+                        name: req.user.name || '',
+                    },
+                    candidateSubdocumentId: candidateId,
                     status: statusToPersist,
-                    remark: trimmedRemark,
-                    statusEntryId: latestStatusEntry._id,
                 });
-            } catch (notifyError) {
-                console.error('Status remark notification failed:', notifyError);
+                offerId = ensured?.offerId || '';
+            } catch (offerError) {
+                console.error('HR manual status offer ensure failed:', offerError);
             }
         }
-
         res.status(200).json({
             message: 'Status updated successfully ✅',
             candidateId: String(candidateId),
             status: statusToPersist,
-            candidate: serializeCandidateForResponse(updatedCandidate),
-            mainDocument: updatedMain,
+            ...(offerId ? { offerId } : {}),
+            candidate: serializeCandidateForResponse(result.candidate),
+            mainDocument: result.mainDocument,
         });
     } catch (error) {
+        if (error instanceof CandidateStatusUpdateError) {
+            const statusCode = error.code === 'CANDIDATE_NOT_FOUND' ? 404 : 400;
+            return res.status(statusCode).json({ message: error.message });
+        }
         console.error('Error updating status:', error);
         res.status(500).json({ message: 'Server error', error: error.message });
     }
@@ -2665,6 +2851,18 @@ app.post('/api/candidates/:candidateId/status/:statusEntryId/remarks', asyncHand
     const statusEntry = candidate.Status.id(statusEntryId);
     if (!statusEntry) {
         return res.status(404).json({ message: 'Status history entry not found.' });
+    }
+
+    if (req.user?.role === 'TeamLead') {
+        const teamLead = await NewUser.findById(req.user.id);
+        const statusDecision = await authorizeTeamLeadProfileStatusUpdate(teamLead, {
+            reqId: mainDocument.reqId,
+            candidate,
+            docRecruiterIds: mainDocument.recruiterId,
+        });
+        if (!statusDecision.ok) {
+            return res.status(statusDecision.statusCode).json({ message: statusDecision.message });
+        }
     }
 
     const latestStatusEntry = getLatestStatusEntry(
@@ -2868,7 +3066,7 @@ app.get('/api/teamlead/source-profiles', authorizeRoles('TeamLead'), asyncHandle
     res.json(data);
 }));
 
-app.get('/api/source-profiles/search', authorizeRoles('Admin', 'TeamLead'), asyncHandler(async (req, res) => {
+app.get('/api/source-profiles/search', authorizeRoles('Admin', 'TeamLead', 'User', 'HR'), asyncHandler(async (req, res) => {
     const data = await searchDashboardSourceProfiles({
         actorId: req.user?.id,
         actorRole: req.user?.role,
@@ -3236,7 +3434,7 @@ app.patch('/api/notifications/:userId/read-all', asyncHandler(async (req, res) =
 }));
 
 app.get(
-  '/api/candidates/:candidateId/documents/:documentField',
+  '/api/candidates/:candidateId/documents/:documentField/:downloadName?',
   asyncHandler(async (req, res) => {
     const { candidateId, documentField } = req.params;
     const actorId = req.user?.id ? String(req.user.id) : null;
@@ -3265,8 +3463,20 @@ app.get(
       return res.status(resolved.error.statusCode).json({ message: resolved.error.message });
     }
 
+    res.setHeader('Cache-Control', 'private, no-store');
+    if (String(req.query.issuePreview || '') === '1') {
+      return res.json({
+        previewPath: buildDocumentPreviewPath(
+          candidateId,
+          documentField,
+          actorId,
+          resolved.downloadName,
+        ),
+      });
+    }
+
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${resolved.downloadName}"`);
+    res.setHeader('Content-Disposition', contentDispositionInline(resolved.downloadName));
     return res.sendFile(resolved.absolutePath);
   }),
 );
@@ -3329,6 +3539,19 @@ app.patch('/api/candidates/:candidateId/schedule-interview', asyncHandler(async 
     const mainDoc = await CandidateModel.findOne({ 'candidates._id': candidateId });
     if (!mainDoc) {
         return res.status(404).json({ status: 'Error', msg: 'Candidate not found.' });
+    }
+
+    if (req.user?.role === 'TeamLead') {
+        const teamLead = await NewUser.findById(req.user.id);
+        const candidate = mainDoc.candidates.id(candidateId);
+        const statusDecision = await authorizeTeamLeadProfileStatusUpdate(teamLead, {
+            reqId: mainDoc.reqId,
+            candidate,
+            docRecruiterIds: mainDoc.recruiterId,
+        });
+        if (!statusDecision.ok) {
+            return res.status(statusDecision.statusCode).json({ message: statusDecision.message });
+        }
     }
 
     const candidateIndex = mainDoc.candidates.findIndex(
