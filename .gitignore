@@ -33,3 +33,6 @@ private-offer-documents/
 
 # Local migration backups
 backups/
+
+# User-uploaded files
+uploads/
