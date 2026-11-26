@@ -897,7 +897,7 @@ function buildDashboardDrillDown(requirements, rows, reqMap, { fromDate = '', to
 
 async function getAdminSourceProfiles({ fromDate = '', toDate = '', name = '' } = {}) {
   const [users, candidateDocs, rawRequirements] = await Promise.all([
-    NewUser.find({ UserType: { $in: ['User', 'TeamLead'] } }).lean(),
+    NewUser.find({ UserType: { $in: ['User', 'TeamLead', 'Admin', 'HR'] } }).lean(),
     CandidateModel.find().lean(),
     NewRequirment.find().lean(),
   ]);

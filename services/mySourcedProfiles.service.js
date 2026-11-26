@@ -4,6 +4,11 @@ const NewUser = require('../models/User');
 const { isValidObjectId } = require('../middleware/validateObjectId');
 const { serializeCandidateStatusHistory } = require('../utils/statusRemarks');
 const { candidateOwnedByUser } = require('../utils/candidateOwnership.util');
+const { getTeamLeadClientContext } = require('../utils/teamLeadRequirements');
+const {
+  classifyTeamLeadRequirement,
+  requirementAccessKeys,
+} = require('../utils/teamLeadProfileAccess');
 
 function parseDateBoundary(value, endOfDay = false) {
   if (!value) return null;
@@ -31,7 +36,9 @@ function isUploadedOnInRange(uploadedOn, startDate, endDate) {
 }
 
 async function getMySourcedProfiles(authenticatedUserId, { startDate, endDate } = {}) {
-  const user = await NewUser.findById(authenticatedUserId).select('_id UserType').lean();
+  const user = await NewUser.findById(authenticatedUserId)
+    .select('_id UserType Clients Requirements excludedRequirements')
+    .lean();
   if (!user) {
     return { status: 'Error', msg: 'User not found', profiles: [] };
   }
@@ -84,7 +91,7 @@ async function getMySourcedProfiles(authenticatedUserId, { startDate, endDate } 
       ...(objectIdKeys.length ? [{ _id: { $in: objectIdKeys } }] : []),
       ...(regIdKeys.length ? [{ regId: { $in: regIdKeys } }] : []),
     ],
-  }).select('_id regId client role').lean();
+  }).select('_id regId client clientId role').lean();
 
   const requirementByKey = new Map();
   requirements.forEach((req) => {
@@ -92,7 +99,18 @@ async function getMySourcedProfiles(authenticatedUserId, { startDate, endDate } 
     requirementByKey.set(String(req.regId), req);
   });
 
-  const profiles = pendingProfiles
+  let visibleProfiles = pendingProfiles;
+  if (user.UserType === 'TeamLead') {
+    const { clientNames } = await getTeamLeadClientContext(user);
+    const visibleKeys = new Set();
+    requirements.forEach((requirement) => {
+      if (classifyTeamLeadRequirement(user, requirement, clientNames) === 'none') return;
+      requirementAccessKeys(requirement).forEach((key) => visibleKeys.add(key));
+    });
+    visibleProfiles = pendingProfiles.filter((row) => visibleKeys.has(row.requirementKey));
+  }
+
+  const profiles = visibleProfiles
     .map((row) => {
       const req = requirementByKey.get(row.requirementKey);
       return {

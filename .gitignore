@@ -8,6 +8,7 @@ node_modules/
 .env.development
 .env.production
 .env.*
+!.env.example
 
 # Logs
 logs
@@ -27,3 +28,12 @@ build/
 
 # Cache
 .cache/
+
+# Private offer documents. Never store these under public uploads/.
+private-offer-documents/
+
+# Local migration backups
+backups/
+
+# User-uploaded files
+uploads/

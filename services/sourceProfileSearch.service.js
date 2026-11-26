@@ -4,10 +4,14 @@ const NewUser = require('../models/User');
 const { isValidObjectId } = require('../middleware/validateObjectId');
 const { enrichRequirementsWithClientNames } = require('../utils/requirementClient');
 const { candidateOwnedByUser } = require('../utils/candidateOwnership.util');
-const { isRequirementVisibleToTeamLead } = require('../utils/teamLeadRequirements');
-const { activeUserFilter } = require('../utils/userStatus');
+const { getTeamLeadClientContext, isRequirementVisibleToTeamLead } = require('../utils/teamLeadRequirements');
+const {
+  buildTeamLeadProfileAccess,
+  classifyTeamLeadRequirement,
+  candidateRowVisibleToTeamLead,
+} = require('../utils/teamLeadProfileAccess');
 const { loadCandidateDocumentContext } = require('./candidateDocumentUpdate.service');
-const { serializeCandidateStatusHistory } = require('../utils/statusRemarks');
+const { getLatestStatusEntry, serializeCandidateStatusHistory } = require('../utils/statusRemarks');
 const {
   normalizeSourceProfileNameQuery,
   candidateMatchesSourceProfileName,
@@ -43,7 +47,7 @@ function rowOwnedByAllowedRecruiters(row, allowedRecruiterIds) {
   return ownerIds.some((id) => allowedRecruiterIds.has(String(id)));
 }
 
-function groupRowsByRecruiter(scopedRows, users, reqMap) {
+function groupRowsByRecruiter(scopedRows, users, reqMap, { includeRequirement = false } = {}) {
   const recruiterIdToCandidates = {};
 
   scopedRows.forEach((row) => {
@@ -51,6 +55,12 @@ function groupRowsByRecruiter(scopedRows, users, reqMap) {
     const recruiterIds = Array.isArray(serialized.recruiterId) && serialized.recruiterId.length
       ? serialized.recruiterId.map(String)
       : (row.recruiterIds || []).map(String);
+    const requirement = reqMap.get(row.reqId) || reqMap.get(String(row.reqId || '').trim());
+    const requirementFields = includeRequirement ? {
+      regId: requirement?.regId != null ? String(requirement.regId) : '',
+      requirementRole: requirement?.role || '',
+      requirementId: requirement?._id ? String(requirement._id) : String(row.reqId || ''),
+    } : {};
 
     recruiterIds.forEach((recruiterId) => {
       if (!recruiterId) return;
@@ -60,6 +70,7 @@ function groupRowsByRecruiter(scopedRows, users, reqMap) {
       recruiterIdToCandidates[recruiterId].push({
         ...serialized,
         client: resolveClientNameForCandidateRow(row, reqMap),
+        ...requirementFields,
       });
     });
   });
@@ -96,16 +107,6 @@ function groupRowsByRecruiter(scopedRows, users, reqMap) {
   };
 }
 
-async function loadActiveTeamIds(user) {
-  const teamIds = (user?.Team || []).filter((id) => id != null && String(id).trim());
-  if (!teamIds.length) return [];
-  const teamUsers = await NewUser.find({
-    _id: { $in: teamIds },
-    ...activeUserFilter,
-  }).select('_id').lean();
-  return teamUsers.map((member) => String(member._id));
-}
-
 function emptySearchResult(query) {
   return {
     status: 'Success',
@@ -115,20 +116,78 @@ function emptySearchResult(query) {
   };
 }
 
-function selectVisibleRequirementsForTeamLead(requirements, user) {
-  return (requirements || []).filter((req) => isRequirementVisibleToTeamLead(user, req, 'all'));
+function displayedCandidateStatus(candidate) {
+  const history = Array.isArray(candidate?.Status) ? candidate.Status : [];
+  const status = String(getLatestStatusEntry(history)?.Status || '').trim();
+  return status || 'No Action Taken';
+}
+
+function candidateMatchesHrRequirementSearch(candidate, rawQuery) {
+  const query = normalizeSourceProfileNameQuery(rawQuery);
+  if (!query) return false;
+  if (candidateMatchesSourceProfileName(candidate, query)) return true;
+  return displayedCandidateStatus(candidate).toLowerCase().includes(query);
+}
+
+async function searchHrRequirementCandidates({ name }) {
+  const query = normalizeSourceProfileNameQuery(name);
+  if (!query) return emptySearchResult('');
+
+  const [users, candidateDocs, rawRequirements] = await Promise.all([
+    NewUser.find({ UserType: { $in: ['User', 'TeamLead', 'Admin', 'HR'] } }).lean(),
+    CandidateModel.find().lean(),
+    NewRequirment.find().lean(),
+  ]);
+
+  const requirements = await enrichRequirementsWithClientNames(rawRequirements);
+  const reqMap = buildRequirementMap(requirements);
+  const rows = flattenUploadedCandidates(candidateDocs).filter((row) => {
+    const requirement = reqMap.get(row.reqId) || reqMap.get(String(row.reqId || '').trim());
+    if (!requirement) return false;
+    return candidateMatchesHrRequirementSearch(row.candidate, query);
+  });
+  const grouped = groupRowsByRecruiter(rows, users, reqMap, { includeRequirement: true });
+
+  return {
+    status: 'Success',
+    query,
+    total: grouped.total,
+    recruiters: grouped.recruiters,
+  };
+}
+
+function selectVisibleRequirementsForTeamLead(requirements, user, clientNames = []) {
+  return (requirements || []).filter((req) => isRequirementVisibleToTeamLead(user, req, 'all', clientNames));
+}
+
+function filterRecruiterProfileRows(rows, {
+  visibleReqIds,
+  recruiterId,
+  name = '',
+} = {}) {
+  return (rows || []).filter((row) => {
+    if (!rowMatchesVisibleRequirement(row, visibleReqIds)) return false;
+    if (!candidateOwnedByUser(row.candidate, row.recruiterIds, recruiterId)) return false;
+    if (name && !candidateMatchesSourceProfileName(row.candidate, name)) return false;
+    return true;
+  });
 }
 
 function filterTeamLeadProfileRows(rows, {
   visibleReqIds,
   allowedRecruiterIds,
+  profileAccess = null,
   fromDate = '',
   toDate = '',
   name = '',
 } = {}) {
   return (rows || []).filter((row) => {
-    if (!rowMatchesVisibleRequirement(row, visibleReqIds)) return false;
-    if (!rowOwnedByAllowedRecruiters(row, allowedRecruiterIds)) return false;
+    if (profileAccess) {
+      if (!candidateRowVisibleToTeamLead(row, profileAccess)) return false;
+    } else {
+      if (!rowMatchesVisibleRequirement(row, visibleReqIds)) return false;
+      if (!rowOwnedByAllowedRecruiters(row, allowedRecruiterIds)) return false;
+    }
     if ((fromDate || toDate) && !isUploadedOnInRange(row.candidate?.uploadedOn, fromDate, toDate)) {
       return false;
     }
@@ -182,13 +241,28 @@ async function searchDashboardSourceProfiles({
   }
 
   const role = actorRole || user.UserType;
-  if (role !== 'Admin' && role !== 'TeamLead') {
+  if (role === 'HR' || user.UserType === 'HR') {
+    return searchHrRequirementCandidates({ name: query });
+  }
+
+  if (role !== 'Admin' && role !== 'TeamLead' && role !== 'User') {
     return { status: 'Error', msg: 'You do not have permission to search source profiles.', statusCode: 403 };
   }
 
   if (role === 'Admin' || user.UserType === 'Admin') {
     const result = await getAdminSourceProfiles({ name: query });
     return { ...result, query };
+  }
+
+  if (role === 'User') {
+    const listed = await listRecruiterSourceProfiles({
+      actorId,
+      name: query,
+    });
+    if (listed.status === 'Error') {
+      return listed;
+    }
+    return { ...listed, query };
   }
 
   const listed = await listTeamLeadSourceProfiles({
@@ -208,7 +282,7 @@ async function listTeamLeadSourceProfiles({
   name = '',
 } = {}) {
   const user = await NewUser.findById(actorId)
-    .select('_id EmployeeName UserType Team Requirements excludedRequirements')
+    .select('_id EmployeeName UserType Team Requirements excludedRequirements Clients')
     .lean();
 
   if (!user) {
@@ -218,21 +292,25 @@ async function listTeamLeadSourceProfiles({
     return { status: 'Error', msg: 'You do not have permission to view source profiles.', statusCode: 403 };
   }
 
-  const [rawRequirements, users, activeTeamIds] = await Promise.all([
+  const [rawRequirements, users, clientContext] = await Promise.all([
     NewRequirment.find().lean(),
-    NewUser.find({ UserType: { $in: ['User', 'TeamLead'] } })
+    NewUser.find({ UserType: { $in: ['User', 'TeamLead', 'Admin', 'HR'] } })
       .select('_id EmployeeName UserType')
       .lean(),
-    loadActiveTeamIds(user),
+    getTeamLeadClientContext(user),
   ]);
 
-  const visibleRequirements = selectVisibleRequirementsForTeamLead(rawRequirements, user);
+  const visibleRequirements = selectVisibleRequirementsForTeamLead(
+    rawRequirements,
+    user,
+    clientContext.clientNames,
+  );
   if (!visibleRequirements.length) {
     return emptyTeamLeadSourceProfiles({ fromDate, toDate });
   }
 
+  const profileAccess = buildTeamLeadProfileAccess(user, visibleRequirements, clientContext.clientNames);
   const visibleReqIds = buildVisibleRequirementIdSet(visibleRequirements);
-  const allowedRecruiterIds = new Set([String(user._id), ...activeTeamIds]);
   const reqIdValues = [...visibleReqIds];
 
   const candidateDocs = await CandidateModel.find({
@@ -243,8 +321,7 @@ async function listTeamLeadSourceProfiles({
   const reqMap = buildRequirementMap(requirements);
   const rows = flattenUploadedCandidates(candidateDocs);
   const scopedRows = dedupeSourceProfileRows(filterTeamLeadProfileRows(rows, {
-    visibleReqIds,
-    allowedRecruiterIds,
+    profileAccess,
     fromDate,
     toDate,
     name,
@@ -261,6 +338,55 @@ async function listTeamLeadSourceProfiles({
   };
 }
 
+async function listRecruiterSourceProfiles({
+  actorId,
+  name = '',
+} = {}) {
+  const user = await NewUser.findById(actorId)
+    .select('_id EmployeeName UserType Requirements')
+    .lean();
+
+  if (!user) {
+    return { status: 'Error', msg: 'User not found.', statusCode: 404 };
+  }
+  if (user.UserType !== 'User') {
+    return { status: 'Error', msg: 'You do not have permission to view source profiles.', statusCode: 403 };
+  }
+
+  const assignedIds = (user.Requirements || []).map((id) => String(id)).filter(Boolean);
+  const claimQuery = { 'claimedBy.userId': String(user._id) };
+  const requirementQuery = assignedIds.length
+    ? { $or: [{ _id: { $in: assignedIds } }, claimQuery] }
+    : claimQuery;
+  const visibleRequirements = await NewRequirment.find(requirementQuery).lean();
+  if (!visibleRequirements.length) {
+    return emptySearchResult(normalizeSourceProfileNameQuery(name));
+  }
+
+  const visibleReqIds = buildVisibleRequirementIdSet(visibleRequirements);
+  const reqIdValues = [...visibleReqIds];
+  const candidateDocs = await CandidateModel.find({
+    reqId: { $in: reqIdValues },
+  }).lean();
+
+  const requirements = await enrichRequirementsWithClientNames(visibleRequirements);
+  const reqMap = buildRequirementMap(requirements);
+  const scopedRows = dedupeSourceProfileRows(filterRecruiterProfileRows(
+    flattenUploadedCandidates(candidateDocs),
+    {
+      visibleReqIds,
+      recruiterId: String(user._id),
+      name,
+    },
+  ));
+
+  const grouped = groupRowsByRecruiter(scopedRows, [user], reqMap);
+  return {
+    status: 'Success',
+    ...grouped,
+  };
+}
+
 async function canAuthenticatedUserViewSourceProfile(actorId, actorRole, candidateId) {
   if (!candidateId) {
     return { ok: false, statusCode: 400, message: 'Candidate id is required.' };
@@ -271,12 +397,12 @@ async function canAuthenticatedUserViewSourceProfile(actorId, actorRole, candida
     return { ok: false, statusCode: context.error.statusCode || 404, message: context.error.message };
   }
 
-  if (actorRole === 'Admin') {
+  if (actorRole === 'Admin' || actorRole === 'HR') {
     return { ok: true };
   }
 
   const user = await NewUser.findById(actorId)
-    .select('_id UserType Team Requirements excludedRequirements')
+    .select('_id UserType Team Requirements excludedRequirements Clients')
     .lean();
   if (!user) {
     return { ok: false, statusCode: 401, message: 'Authentication required.' };
@@ -301,35 +427,35 @@ async function canAuthenticatedUserViewSourceProfile(actorId, actorRole, candida
     ? await NewRequirment.findOne({ $or: orConditions }).lean()
     : null;
 
-  if (!isRequirementVisibleToTeamLead(user, requirement, 'all')) {
+  const { clientNames } = await getTeamLeadClientContext(user);
+  const accessLevel = classifyTeamLeadRequirement(user, requirement, clientNames);
+  if (accessLevel === 'none') {
     return { ok: false, statusCode: 403, message: 'You do not have permission to view this source profile.' };
   }
 
-  const activeTeamIds = await loadActiveTeamIds(user);
-  const allowedRecruiterIds = new Set([String(user._id), ...activeTeamIds]);
-  const owned = candidateOwnedByUser(context.candidate, context.docRecruiterIds, actorId)
-    || (Array.isArray(context.docRecruiterIds)
-      ? context.docRecruiterIds.some((id) => allowedRecruiterIds.has(String(id)))
-      : allowedRecruiterIds.has(String(context.docRecruiterIds || '')))
-    || (Array.isArray(context.candidate?.recruiterId)
-      ? context.candidate.recruiterId.some((id) => allowedRecruiterIds.has(String(id)))
-      : allowedRecruiterIds.has(String(context.candidate?.recruiterId || '')));
+  const canView = accessLevel === 'full'
+    || candidateOwnedByUser(context.candidate, context.docRecruiterIds, actorId);
+  if (!canView) {
+    return { ok: false, statusCode: 403, message: 'You do not have permission to view this source profile.' };
+  }
 
-  return owned
-    ? { ok: true }
-    : { ok: false, statusCode: 403, message: 'You do not have permission to view this source profile.' };
+  return { ok: true, canUpdateProfileStatus: accessLevel === 'full' };
 }
 
 module.exports = {
   normalizeSourceProfileNameQuery,
   candidateMatchesSourceProfileName,
+  candidateMatchesHrRequirementSearch,
+  displayedCandidateStatus,
   buildVisibleRequirementIdSet,
   rowMatchesVisibleRequirement,
   rowOwnedByAllowedRecruiters,
   selectVisibleRequirementsForTeamLead,
+  filterRecruiterProfileRows,
   filterTeamLeadProfileRows,
   dedupeSourceProfileRows,
   searchDashboardSourceProfiles,
   listTeamLeadSourceProfiles,
+  listRecruiterSourceProfiles,
   canAuthenticatedUserViewSourceProfile,
 };

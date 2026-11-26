@@ -16,7 +16,18 @@ connectDB();
 app.use(compression());
 app.use(express.json());
 app.use(cors);
-app.use('/uploads', express.static(uploadDir));
+
+const uploadStatic = express.static(uploadDir);
+
+const blockPublicPdf = (req, res, next) => {
+  const extension = path.extname(req.path || '').toLowerCase();
+  if (extension === '.pdf') {
+    return res.status(404).json({ status: 'Failed', msg: 'Not found' });
+  }
+  return next();
+};
+
+app.use('/uploads', blockPublicPdf, uploadStatic);
 
 app.get('/health', (req, res) => {
   res.json({

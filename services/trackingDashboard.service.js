@@ -7,7 +7,11 @@ const {
   buildRequirementMap,
 } = require('./adminAnalytics.service');
 const { getLatestStatus, isRejectedStatus } = require('../utils/candidateStatusMap');
-const { getExcludedRequirementIdSet } = require('../utils/teamLeadRequirements');
+const { getExcludedRequirementIdSet, getTeamLeadClientContext } = require('../utils/teamLeadRequirements');
+const {
+  buildTeamLeadProfileAccess,
+  candidateRowVisibleToTeamLead,
+} = require('../utils/teamLeadProfileAccess');
 const {
   matchesStage,
   getStageByKey,
@@ -32,7 +36,7 @@ function resolveRecruiterName(row, userMap) {
   return 'Unknown';
 }
 
-function buildViewerScope(viewer, requirements = [], filters = {}) {
+async function buildViewerScope(viewer, requirements = [], filters = {}) {
   if (!viewer) {
     return { requirementIds: new Set(), recruiterIds: new Set() };
   }
@@ -66,20 +70,16 @@ function buildViewerScope(viewer, requirements = [], filters = {}) {
       recruiterIds = new Set([filters.recruiterId]);
     }
   } else if (viewer.UserType === 'TeamLead') {
-    const clientIds = new Set((viewer.Clients || []).map(String));
-    const assignedReqIds = new Set((viewer.Requirements || []).map(String));
-    const excludedReqIds = getExcludedRequirementIdSet(viewer);
-    recruiterIds = new Set([viewer._id.toString(), ...(viewer.Team || []).map(String)]);
-    requirements.forEach((req) => {
-      const reqId = req._id.toString();
-      if (excludedReqIds.has(reqId)) return;
-      if (clientIds.has(String(req.clientId)) || assignedReqIds.has(reqId)) {
-        requirementIds.add(reqId);
-      }
-    });
-    if (filters.recruiterId && recruiterIds.has(filters.recruiterId)) {
-      recruiterIds = new Set([filters.recruiterId]);
+    const { clientNames } = await getTeamLeadClientContext(viewer);
+    const teamLeadProfileAccess = buildTeamLeadProfileAccess(viewer, requirements, clientNames);
+    if (filters.recruiterId) {
+      teamLeadProfileAccess.restrictToRecruiterId = String(filters.recruiterId);
     }
+    return {
+      requirementIds: new Set(),
+      recruiterIds: null,
+      teamLeadProfileAccess,
+    };
   } else {
     requirementIds = new Set((viewer.Requirements || []).map(String));
     recruiterIds = new Set([viewer._id.toString()]);
@@ -89,6 +89,9 @@ function buildViewerScope(viewer, requirements = [], filters = {}) {
 }
 
 function rowInScope(row, scope) {
+  if (scope.teamLeadProfileAccess) {
+    return candidateRowVisibleToTeamLead(row, scope.teamLeadProfileAccess);
+  }
   if (!scope.requirementIds.has(row.reqId)) return false;
   if (!scope.recruiterIds) return true;
   return row.recruiterIds.some((id) => scope.recruiterIds.has(id));
@@ -169,7 +172,7 @@ async function loadTrackingContext(viewerUserId, filters = {}) {
   const rows = flattenUploadedCandidates(candidateDocs);
   const reqMap = buildRequirementMap(requirements);
   const userMap = buildUserMap(users);
-  const scope = buildViewerScope(viewer, requirements, {
+  const scope = await buildViewerScope(viewer, requirements, {
     ...filters,
     teamLeadUser,
   });
